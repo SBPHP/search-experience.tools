@@ -1,0 +1,800 @@
+with st.sidebar:
+    # --- Sidebar Wrapper (automatisch repariert) ---
+    try:
+    pass
+        st.write("Sidebar geladen …")
+    except Exception:
+    pass
+        pass
+
+    # --- Sidebar Wrapper (automatisch repariert) ---
+    try:
+    pass
+        st.write("Sidebar geladen …")
+    except Exception:
+    pass
+        pass
+
+try:
+    pass
+    check_health.cache_clear()
+except Exception:
+    pass
+pass
+st.rerun()
+for t in TOOLS:
+if t.get("slug") == slug:
+return t
+except Exception:
+    pass
+pass
+# Fallback: evtl. dynamische Quelle in st.session_state
+try:
+    pass
+    for t in st.session_state.get("tools", []):
+if t.get("slug") == slug:
+return t
+except Exception:
+    pass
+pass
+return {}
+
+
+def _resolve_health_urls(port: int, slug: str) -> list:
+    """Baue die Liste möglicher Health-URLs – inkl. tool-spezifischen Overrides."""
+    urls = []
+    t = find_tool(slug) or {}
+
+    # Harte URL (überschreibt alles)
+    u = (t.get("health_url") or "").strip()
+    if u:
+        urls.append(u if u.startswith("http") else f"http://127.0.0.1:{port}{u}")
+
+    # Relativer Pfad
+    hp = (t.get("health_path") or "").strip()
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+
+    # Defaults (Streamlit)
+    urls.extend([
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ])
+
+    # Dedupe mit Reihenfolge
+    seen = set()
+    uniq = []
+    for x in urls:
+        if x not in seen:
+            uniq.append(x)
+            seen.add(x)
+    return uniq
+from typing import List, Tuple, Dict, Optional
+import os, json, time, subprocess
+try:
+    pass
+    import requests
+except Exception:
+    pass
+    requests = None
+import streamlit as st
+
+# -*- coding: utf-8 -*-
+import os, json, time, subprocess
+from typing import List, Tuple, Dict, Optional
+
+try:
+    pass
+    import requests
+except Exception:
+    pass
+    requests = None
+
+import streamlit as st
+
+# --- Sidebar Header (Logout + Logged-in info) ---
+def render_sidebar_header(auth, name, username):
+    import streamlit as st
+    with st.sidebar:
+        auth.logout("Logout", "sidebar", key="logout_btn_fixed")
+        _name = name or "—"
+        _user = username or "—"
+        st.caption(f"**Eingeloggt als:** {_name} ({_user})")
+        st.divider()
+
+
+
+
+
+
+# --- Status-Check: nicht-invasiver Override (nur am Ende angehängt) ---
+HEALTH_OVERRIDES = {
+    # MetadataCreator läuft mit Base-Pfad → eigener Health-Pfad
+    "metadatacreator": "/tools/metadatacreator/_stcore/health",
+}
+
+def _probe(url: str, timeout: float) -> int:
+    """Gibt HTTP-Status zurück. Erst HEAD, wenn nicht 2xx/3xx → GET."""
+    try:
+    pass
+        import requests as _rq
+    except Exception:
+    pass
+        return 0
+    code_head = 0
+    try:
+    pass
+        r = _rq.head(url, timeout=timeout, allow_redirects=False)
+        code_head = int(getattr(r, "status_code", 0)) or 0
+        if 200 <= code_head < 400:
+            return code_head
+    except Exception:
+    pass
+        pass
+    # Fallback GET – wenn HEAD nicht erfolgreich war
+    try:
+    pass
+        r = _rq.get(url, timeout=timeout, allow_redirects=False)
+        return int(getattr(r, "status_code", 0)) or 0
+    except Exception:
+    pass
+        return code_head or 0
+
+@st.cache_data(ttl=1, show_spinner=False)
+def check_health_disabled(port: int, slug: str, timeout: float = 1.8):
+    """2xx–3xx = UP. Nutzt optional tool-spezifische Health-Pfade."""
+    import time as _t
+    start = _t.perf_counter()
+
+    # 1) Tool-spezifisch
+    urls = []
+    hp = HEALTH_OVERRIDES.get(slug)
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+
+    # 2) Defaults
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+
+    # Dedupe bei Reihenfolge
+    seen, uniq = set(), []
+    for u in urls:
+        if u not in seen:
+            uniq.append(u); seen.add(u)
+
+    ok = False
+    for u in uniq:
+        code = _probe(u, timeout)
+        if 200 <= code < 400:
+            ok = True
+            break
+
+    latency_ms = (_t.perf_counter() - start) * 1000.0
+    return ok, latency_ms
+# --- Ende Override ---
+
+# --- Health-Check Override (nur Logik, UI unverändert) ---
+@st.cache_data(ttl=1, show_spinner=False)
+def _check_health_v3(port: int, slug: str, timeout: float = 1.8):
+    """2xx–3xx = UP. Bevorzugt health_url, dann health_path, dann Default-Pfade. HEAD→GET-Fallback."""
+    import time as _t
+    start = _t.perf_counter()
+
+    # Tool-Record finden: zuerst session_state.tools, dann TOOLS
+    tool = None
+    try:
+    pass
+        for t in (st.session_state.get("tools") or []):
+            if t.get("slug") == slug:
+                tool = t
+                break
+    except Exception:
+    pass
+        pass
+    if tool is None:
+        try:
+    pass
+            for t in TOOLS:
+                if t.get("slug") == slug:
+                    tool = t
+                    break
+        except Exception:
+    pass
+            pass
+    tool = tool or {}
+
+    urls = []
+
+    # 1) absolute URL aus tool (bevorzugt)
+    u = (tool.get("health_url") or "").strip()
+    if u:
+        urls.append(u)
+
+    # 2) relativer health_path → absolut machen
+    hp = (tool.get("health_path") or "").strip()
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+
+    # 3) Standard-Streamlit-Pfade
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+
+    # Dedupe mit Reihenfolge
+    seen, uniq = set(), []
+    for x in urls:
+        if x not in seen:
+            uniq.append(x); seen.add(x)
+
+    # Probe: erst HEAD (schnell). Wenn nicht 2xx/3xx, dann GET.
+    def _probe(url: str) -> int:
+        try:
+    pass
+            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                return r.status_code
+        except Exception:
+    pass
+            pass
+        try:
+    pass
+            r = requests.get(url, timeout=timeout, allow_redirects=False)
+            return r.status_code
+        except Exception:
+    pass
+            return 0
+
+    ok = False
+    for url in uniq:
+        code = _probe(url)
+        if 200 <= code < 400:
+            ok = True
+            break
+
+    latency_ms = (_t.perf_counter() - start) * 1000.0
+    return ok, latency_ms
+
+# Bestehenden Namen auf neue Funktion mappen (UI muss nicht angepasst werden)
+# --- Ende Health-Check Override ---
+
+@st.cache_data(ttl=1, show_spinner=False)
+def _check_health_v4(port: int, slug: str, timeout: float = 1.8):
+    """2xx–3xx = UP. Erzwingt für metadatacreator die absolute Health-URL.
+       Nutzt ansonsten health_url/health_path aus session_state.tools oder TOOLS.
+       HEAD→GET-Fallback, ohne UI anzutasten.
+    """
+    import time as _t
+    start = _t.perf_counter()
+
+    urls = []
+
+    # 0) Harte Vorgabe für metadatacreator (BasePath)
+    if slug == "metadatacreator":
+        urls.append("http://127.0.0.1:8505/tools/metadatacreator/_stcore/health")
+
+    # Helper: Tool-Record aus session_state.tools ODER TOOLS
+    def _find_tool(s: str):
+        try:
+    pass
+            for t in (st.session_state.get("tools") or []):
+                if t.get("slug") == s:
+                    return t
+        except Exception:
+    pass
+            pass
+        try:
+    pass
+            for t in TOOLS:
+                if t.get("slug") == s:
+                    return t
+        except Exception:
+    pass
+            pass
+        return {}
+
+    t = _find_tool(slug)
+
+    # 1) health_url bevorzugen
+    u = (t.get("health_url") or "").strip()
+    if u:
+        urls.append(u)
+
+    # 2) health_path relativ → absolut
+    hp = (t.get("health_path") or "").strip()
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+
+    # 3) Defaults
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+
+    # Dedupe
+    seen, uniq = set(), []
+    for x in urls:
+        if x not in seen:
+            uniq.append(x); seen.add(x)
+
+    if requests is None:
+        return False, (_t.perf_counter() - start) * 1000.0
+
+    # Probe: erst HEAD, dann GET
+    ok = False
+    for url in uniq:
+        try:
+    pass
+            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                ok = True
+                break
+        except Exception:
+    pass
+            pass
+        try:
+    pass
+            r = requests.get(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                ok = True
+                break
+        except Exception:
+    pass
+            pass
+
+    latency_ms = (_t.perf_counter() - start) * 1000.0
+    return ok, latency_ms
+
+# Diese Funktion aktiv schalten (UI muss nicht angepasst werden)
+
+# --- Health-Check: sanfter Override, UI unverändert --------------------------
+@st.cache_data(ttl=1, show_spinner=False)
+# -----------------------------------------------------------------------------
+
+@st.cache_data(ttl=1, show_spinner=False)
+def _check_health_override(port: int, slug: str, timeout: float = 2.0):
+    """
+    Robust: 1) systemd-Status (startet schnell & sicher), 2) HTTP-Health (HEAD→GET),
+    akzeptiert 2xx/3xx (wichtig für BaseUrlPath-Redirects).
+    """
+    import time as _t, subprocess, shutil
+    start = _t.perf_counter()
+
+    # 1) systemd zuerst
+    ok = False
+    try:
+    pass
+        unit = {
+            "metadatacreator": "se-metadatacreator.service",
+            "redirectmapper":  "se-redirectmapper.service",
+            "linkchecker":     "se-linkchecker.service",
+            "contentgapper":   "se-contentgapper.service",
+        }.get(slug)
+        if unit and shutil.which("systemctl"):
+            out = subprocess.check_output(["systemctl", "is-active", unit], text=True, timeout=1.5).strip()
+            if out == "active":
+                ok = True
+    except Exception:
+    pass
+        pass
+
+    # 2) HTTP-Health, nur wenn systemd nicht schon "active" meldet
+    if not ok:
+        try:
+    pass
+            import requests
+            urls = []
+
+            # Tool-Record suchen (session_state.tools > TOOLS)
+            tool = None
+            try:
+    pass
+                for t in (st.session_state.get("tools") or []):
+                    if t.get("slug") == slug:
+                        tool = t; break
+            except Exception:
+    pass
+                pass
+            if tool is None:
+                try:
+    pass
+                    for t in TOOLS:
+                        if t.get("slug") == slug:
+                            tool = t; break
+                except Exception:
+    pass
+                    pass
+            tool = tool or {}
+
+            # Preferred URLs
+            u = (tool.get("health_url") or "").strip()
+            if u:
+                urls.append(u)
+            hp = (tool.get("health_path") or "").strip()
+            if hp:
+                urls.append(f"http://127.0.0.1:{port}{hp}")
+
+            # Standardpfade
+            urls += [
+                f"http://127.0.0.1:{port}/_stcore/health",
+                f"http://127.0.0.1:{port}/healthz",
+                f"http://127.0.0.1:{port}/tools/{slug}/_stcore/health",
+                f"http://127.0.0.1:{port}/",
+            ]
+
+            seen, uniq = set(), []
+            for x in urls:
+                if x and x not in seen:
+                    uniq.append(x); seen.add(x)
+
+            def _probe(url: str) -> int:
+                try:
+    pass
+                    r = requests.head(url, timeout=timeout, allow_redirects=False)
+                    if 200 <= r.status_code < 400:
+                        return r.status_code
+                except Exception:
+    pass
+                    pass
+                try:
+    pass
+                    r = requests.get(url, timeout=timeout, allow_redirects=True)
+                    return r.status_code
+                except Exception:
+    pass
+                    return 0
+
+            for url in uniq:
+                code = _probe(url)
+                if 200 <= code < 400:
+                    ok = True
+                    break
+        except Exception:
+    pass
+            pass
+
+    latency_ms = (_t.perf_counter() - start) * 1000.0
+    return ok, latency_ms
+
+# Diese Implementierung aktivieren (UI bleibt unverändert)
+
+# --- Live-Status Auto-Refresh (1s), optional per Sidebar-Schalter ---
+try:
+    pass
+    if st.session_state.get("live_status_on"):
+        import time
+        time.sleep(1)
+        st.rerun()
+except Exception:
+    pass
+    pass
+
+# ===========================
+# 📈 SEO Quick Audit (leicht)
+# ===========================
+def _seo_extract(url: str) -> dict:
+    import re, time
+    try:
+    pass
+        import requests
+    except Exception:
+    pass
+        return {"ok": False, "error": "requests nicht installiert"}
+    try:
+    pass
+        from bs4 import BeautifulSoup  # wird bereits von contentgapper genutzt
+    except Exception:
+    pass
+        BeautifulSoup = None
+
+    t0 = time.perf_counter()
+    try:
+    pass
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Search-Experience/1.0"})
+    except Exception as e:
+    pass
+        return {"ok": False, "error": f"Fetch-Fehler: {e}"}
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+    html = r.text or ""
+    title = ""
+    desc  = ""
+    h1    = ""
+    canon = ""
+
+    if BeautifulSoup:
+        soup = BeautifulSoup(html, "html.parser")
+        t = soup.find("title")
+        title = (t.text or "").strip() if t else ""
+        md = soup.find("meta", attrs={"name": "description"})
+        desc = (md.get("content") or "").strip() if md else ""
+        h1tag = soup.find("h1")
+        h1 = (h1tag.text or "").strip() if h1tag else ""
+        link_c = soup.find("link", attrs={"rel": ["canonical","Canonical"]})
+        canon = (link_c.get("href") or "").strip() if link_c else ""
+    else:
+        # Fallback ohne bs4 (quick & dirty)
+        m = re.search(r"<title>(.*?)</title>", html, re.I|re.S)
+        title = (m.group(1).strip() if m else "")
+        m = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']', html, re.I|re.S)
+        desc = (m.group(1).strip() if m else "")
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.I|re.S)
+        h1 = (m.group(1).strip() if m else "")
+        m = re.search(r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\'](.*?)["\']', html, re.I|re.S)
+        canon = (m.group(1).strip() if m else "")
+
+    robots = ""
+    try:
+    pass
+        robots = ",".join(r.headers.get("X-Robots-Tag","").split())
+    except Exception:
+    pass
+        pass
+
+    issues = []
+    if len(title) < 10 or len(title) > 65: issues.append(f"Title-Länge suboptimal ({len(title)} Zeichen)")
+    if not desc or len(desc) < 50 or len(desc) > 160: issues.append(f"Description-Länge prüfen ({len(desc)} Zeichen)")
+    if not h1: issues.append("Kein H1 gefunden")
+    if canon and not canon.startswith("http"): issues.append("Canonical ist relativ – absolut setzen")
+    if "noindex" in robots.lower(): issues.append("X-Robots-Tag enthält noindex")
+    if r.status_code >= 400: issues.append(f"HTTP {r.status_code}")
+
+    return {
+        "ok": True,
+        "status": r.status_code,
+        "latency_ms": latency_ms,
+        "title": title,
+        "description": desc,
+        "h1": h1,
+        "canonical": canon,
+        "robots": robots,
+        "issues": issues,
+        "final_url": str(getattr(r, "url", "")),
+    }
+
+
+
+# ========================================
+# 🛠️ Ping aller Tools (Status-Schnappschuss)
+# ========================================
+
+
+# --- Live-Status Auto-Refresh (1s) ---
+try:
+    pass
+    if st.session_state.get("live_status_on"):
+        import time
+        time.sleep(1)
+        st.rerun()
+except Exception:
+    pass
+    pass
+
+# =========================================================
+# 🔧 SEO & Ops – Zusatzsektionen (anhängen, nicht überschreiben)
+# =========================================================
+
+# -- SEO Quick Audit Helper --
+def _se_quick_fetch(url: str) -> dict:
+    """Holt URL und extrahiert sehr einfache SEO-Signale (ohne großen Overhead)."""
+    import re, time
+    try:
+    pass
+        import requests
+    except Exception:
+    pass
+        return {"ok": False, "error": "Python-Paket 'requests' fehlt"}
+    try:
+    pass
+        from bs4 import BeautifulSoup
+    except Exception:
+    pass
+        BeautifulSoup = None
+
+    t0 = time.perf_counter()
+    try:
+    pass
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Search-Experience/1.0"})
+    except Exception as e:
+    pass
+        return {"ok": False, "error": f"Fetch-Fehler: {e}"}
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+    html = r.text or ""
+    title = desc = h1 = canon = ""
+
+    if BeautifulSoup:
+        soup = BeautifulSoup(html, "html.parser")
+        t = soup.find("title"); title = (t.text or "").strip() if t else ""
+        md = soup.find("meta", attrs={"name": "description"})
+        desc = (md.get("content") or "").strip() if md else ""
+        h1tag = soup.find("h1"); h1 = (h1tag.text or "").strip() if h1tag else ""
+        link_c = soup.find("link", attrs={"rel": ["canonical","Canonical"]})
+        canon = (link_c.get("href") or "").strip() if link_c else ""
+    else:
+        m = re.search(r"<title>(.*?)</title>", html, re.I|re.S); title = (m.group(1).strip() if m else "")
+        m = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']', html, re.I|re.S)
+        desc = (m.group(1).strip() if m else "")
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.I|re.S); h1 = (m.group(1).strip() if m else "")
+        m = re.search(r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\'](.*?)["\']', html, re.I|re.S)
+        canon = (m.group(1).strip() if m else "")
+
+    robots = (r.headers.get("X-Robots-Tag","") or "").strip()
+
+    issues = []
+    if len(title) < 10 or len(title) > 65: issues.append(f"Title-Länge suboptimal ({len(title)} Zeichen)")
+    if not desc or len(desc) < 50 or len(desc) > 160: issues.append(f"Description-Länge prüfen ({len(desc)} Zeichen)")
+    if not h1: issues.append("Kein H1 gefunden")
+    if canon and not canon.startswith("http"): issues.append("Canonical ist relativ – absolut setzen")
+    if "noindex" in robots.lower(): issues.append("X-Robots-Tag enthält noindex")
+    if r.status_code >= 400: issues.append(f"HTTP {r.status_code}")
+
+    return {
+        "ok": True, "status": r.status_code, "latency_ms": latency_ms,
+        "title": title, "description": desc, "h1": h1, "canonical": canon,
+        "robots": robots, "issues": issues, "final_url": str(getattr(r, "url", "")),
+    }
+
+# ---------- UI: 🔎 SEO Quick Audit ----------
+
+# ---------- UI: 🧯 Letzte Service-Logs (systemd) ----------
+def _se_read_logs(unit: str, lines: int = 80) -> str:
+    import subprocess
+    try:
+    pass
+        out = subprocess.check_output(
+            ["journalctl", "-u", unit, "-n", str(lines), "--no-pager"],
+            text=True, timeout=3
+        )
+        return out
+    except Exception as e:
+    pass
+        return f"Log-Lesen fehlgeschlagen: {e}\n\nTipp: evtl. Berechtigungen anpassen (journalctl)."
+
+
+
+
+# =========================================================
+# 🔧 Extra Sections (SEO Quick Audit, Service Logs, Tools Ping)
+# =========================================================
+def _se_quick_fetch(url: str) -> dict:
+    import re, time
+    try:
+    pass
+        import requests
+    except Exception:
+    pass
+        return {"ok": False, "error": "Python-Paket 'requests' fehlt"}
+    try:
+    pass
+        from bs4 import BeautifulSoup
+    except Exception:
+    pass
+        BeautifulSoup = None
+
+    t0 = time.perf_counter()
+    try:
+    pass
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Search-Experience/1.0"})
+    except Exception as e:
+    pass
+        return {"ok": False, "error": f"Fetch-Fehler: {e}"}
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+    html = r.text or ""
+    title = desc = h1 = canon = ""
+
+    if BeautifulSoup:
+        soup = BeautifulSoup(html, "html.parser")
+        t = soup.find("title"); title = (t.text or "").strip() if t else ""
+        md = soup.find("meta", attrs={"name": "description"})
+        desc = (md.get("content") or "").strip() if md else ""
+        h1tag = soup.find("h1"); h1 = (h1tag.text or "").strip() if h1tag else ""
+        link_c = soup.find("link", attrs={"rel": ["canonical","Canonical"]})
+        canon = (link_c.get("href") or "").strip() if link_c else ""
+    else:
+        m = re.search(r"<title>(.*?)</title>", html, re.I|re.S); title = (m.group(1).strip() if m else "")
+        m = re.search(r'<meta[^>]+name=["\\\']description["\\\'][^>]+content=["\\\'](.*?)["\\\']', html, re.I|re.S)
+        desc = (m.group(1).strip() if m else "")
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.I|re.S); h1 = (m.group(1).strip() if m else "")
+        m = re.search(r'<link[^>]+rel=["\\\']canonical["\\\'][^>]+href=["\\\'](.*?)["\\\']', html, re.I|re.S)
+        canon = (m.group(1).strip() if m else "")
+
+    robots = (r.headers.get("X-Robots-Tag","") or "").strip()
+    issues = []
+    if len(title) < 10 or len(title) > 65: issues.append(f"Title-Länge suboptimal ({len(title)} Zeichen)")
+    if not desc or len(desc) < 50 or len(desc) > 160: issues.append(f"Description-Länge prüfen ({len(desc)} Zeichen)")
+    if not h1: issues.append("Kein H1 gefunden")
+    if canon and not canon.startswith("http"): issues.append("Canonical ist relativ – absolut setzen")
+    if "noindex" in robots.lower(): issues.append("X-Robots-Tag enthält noindex")
+    if r.status_code >= 400: issues.append(f"HTTP {r.status_code}")
+
+    return {
+        "ok": True, "status": r.status_code, "latency_ms": latency_ms,
+        "title": title, "description": desc, "h1": h1, "canonical": canon,
+        "robots": robots, "issues": issues, "final_url": str(getattr(r, "url", "")),
+    }
+
+def _se_read_logs(unit: str, lines: int = 80) -> str:
+    import subprocess
+    try:
+    pass
+        out = subprocess.check_output(
+            ["journalctl", "-u", unit, "-n", str(lines), "--no-pager"],
+            text=True, timeout=3
+        )
+        return out
+    except Exception as e:
+    pass
+        return f"Log-Lesen fehlgeschlagen: {e}\\n\\nTipp: evtl. Berechtigungen anpassen (journalctl)."
+
+def render_seo_ops_sections():
+    import streamlit as st
+    # --- SEO Quick Audit ---
+    with st.container(border=True):
+        st.markdown("## 🔎 SEO Quick Audit")
+        with st.form("seo_quick_audit"):
+            url = st.text_input("URL prüfen", placeholder="https://www.deine-domain.tld/")
+            submitted = st.form_submit_button("Analysieren", type="primary")
+        if submitted and url:
+            res = _se_quick_fetch(url.strip())
+            if not res.get("ok"):
+                st.error(res.get("error","Unbekannter Fehler"))
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("HTTP Status", res["status"])
+                c2.metric("Latency", f"{res['latency_ms']:.0f} ms")
+                c3.metric("Title-Zeichen", len(res["title"] or ""))
+                c4.metric("Desc.-Zeichen", len(res["description"] or ""))
+                st.write(f"**Title:** {res['title'] or '—'}")
+                st.write(f"**Description:** {res['description'] or '—'}")
+                st.write(f"**H1:** {res['h1'] or '—'}")
+                st.write(f"**Canonical:** {res['canonical'] or '—'}")
+                st.write(f"**X-Robots-Tag:** {res['robots'] or '—'}")
+                if res.get("issues"):
+                    st.warning("**Hinweise/Issues:**\\n- " + "\\n- ".join(res["issues"]))
+                else:
+                    st.success("Keine offensichtlichen Issues erkannt.")
+
+    # --- Service Logs ---
+    with st.expander("🧯 Letzte Service-Logs (systemd)", expanded=False):
+        units = {
+            "Hub": "search-experience-hub.service",
+            "RedirectMapper": "se-redirectmapper.service",
+            "LinkChecker": "se-linkchecker.service",
+            "MetadataCreator": "se-metadatacreator.service",
+            "ContentGapper": "se-contentgapper.service",
+        }
+        sel = st.selectbox("Dienst wählen", list(units.keys()))
+        if st.button("Logs aktualisieren", key=f"logs_refresh_{sel}"):
+            st.session_state["logs_sel"] = sel
+        sel = st.session_state.get("logs_sel", sel)
+        st.code(_se_read_logs(units[sel]), language="bash")
+
+    # --- Tools jetzt prüfen ---
+    with st.container(border=True):
+        st.markdown("## 🛠️ Tools jetzt prüfen")
+        if st.button("Alle Tools pingen", key="ping_all_tools_btn"):
+            rows = []
+            for _t in get_tools():
+                slug = _t.get("slug",""); port = int(_t.get("port",0) or 0)
+                try:
+    pass
+                    up, lat = check_health(port, slug)
+                except Exception:
+    pass
+                    up, lat = (False, 0.0)
+                rows.append({"tool": _t.get("name", slug), "slug": slug, "up": up, "latency_ms": round(lat)})
+            try:
+    pass
+                import pandas as pd
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            except Exception:
+    pass
+                st.write(rows)

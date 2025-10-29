@@ -1,0 +1,6 @@
+# --- DEBUG INJECT START ---
+import streamlit as st, os
+st.set_page_config(page_title="Tools Hub (Debug)", layout="wide")
+st.info(f"DEBUG: app.py executed (PID={os.getpid()})")
+# --- DEBUG INJECT END ---
+

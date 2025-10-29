@@ -1,0 +1,27 @@
+# --- Core app ---
+streamlit>=1.36
+
+# --- Data handling / math ---
+pandas>=2.1
+numpy>=1.26
+
+# --- ML / embeddings ---
+sentence-transformers>=2.7.0
+transformers>=4.40
+torch>=2.3
+
+# --- NLP utilities ---
+nltk>=3.8.1
+
+# --- Classical ML helpers ---
+scikit-learn>=1.3
+
+# --- Web / scraping ---
+requests>=2.31
+beautifulsoup4>=4.12.2
+
+# --- Visualizations ---
+plotly>=5.20
+
+# --- Reddit API (optional but supported) ---
+praw>=7.7.1

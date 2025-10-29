@@ -1,0 +1,7 @@
+# --- DEBUG INJECT START ---
+import os, streamlit as st
+st.set_page_config(page_title="Tools Hub (Debug)", layout="wide")
+st.info(f"DEBUG: app.py executed (PID={os.getpid()})")
+# Gate-Bypass, falls im Code auf ready geprüft wird:
+st.session_state.ready = True
+# --- DEBUG INJECT END ---

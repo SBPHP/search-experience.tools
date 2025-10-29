@@ -1,0 +1,16 @@
+# --- Runtime / UI ---
+streamlit>=1.38
+pandas>=2.0
+
+# --- LLM SDKs (wie im Code importiert) ---
+anthropic>=0.34
+openai>=1.51
+groq>=0.11
+google-generativeai>=0.7
+
+# --- Crawling / SEO (genutzt via advertools.crawl) ---
+advertools>=0.13
+scrapy>=2.11
+lxml>=5.2
+tldextract>=5.1
+requests>=2.31

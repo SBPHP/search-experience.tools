@@ -1,0 +1,244 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+import os, time, json
+from typing import List, Tuple, Dict, Optional
+
+import streamlit as st
+
+# Optional: requests für Health-Checks
+try:
+    import requests
+except Exception:
+    requests = None
+
+# Optional: Login (wenn streamlit_authenticator installiert ist)
+try:
+    import streamlit_authenticator as stauth
+except Exception:
+    stauth = None
+
+# -----------------------------
+# Konfiguration / Tools
+# -----------------------------
+BASE_HREF = "/tools"
+
+TOOLS: List[Dict] = [
+    {
+        "slug": "redirectmapper",
+        "name": "RedirectMapper",
+        "desc": "URL-Mapping & Bulk-Redirects prüfen",
+        "emoji": "🧭",
+        "port": 8502,
+        # Läuft am Root (kein BasePfad im Service) – Nginx strippt /tools/redirectmapper/
+        "health_url": "http://127.0.0.1:8502/_stcore/health",
+    },
+    {
+        "slug": "linkchecker",
+        "name": "LinkChecker",
+        "desc": "Broken Links & Statuscodes",
+        "emoji": "🔗",
+        "port": 8504,
+        "health_url": "http://127.0.0.1:8504/tools/linkchecker/_stcore/health",
+    },
+    {
+        "slug": "metadatacreator",
+        "name": "MetadataCreator",
+        "desc": "Meta Tags & Social Previews",
+        "emoji": "✍️",
+        "port": 8505,
+        "health_url": "http://127.0.0.1:8505/tools/metadatacreator/_stcore/health",
+    },
+    {
+        "slug": "contentgapper",
+        "name": "ContentGapper",
+        "desc": "Content Gaps & Ideen",
+        "emoji": "🧩",
+        "port": 8506,
+        "health_url": "http://127.0.0.1:8506/tools/contentgapper/_stcore/health",
+    },
+]
+
+# -----------------------------
+# Health-Check (stabil & simpel)
+# -----------------------------
+@st.cache_data(ttl=1, show_spinner=False)
+def check_health(port: int, slug: str, timeout: float = 1.8) -> Tuple[bool, float]:
+    """2xx–3xx = UP. Erst HEAD (schnell), dann GET. Nutzt ggf. absolute health_url je Tool."""
+    t0 = time.perf_counter()
+
+    # Tool lookup
+    tool = None
+    for t in TOOLS:
+        if t.get("slug") == slug:
+            tool = t
+            break
+    tool = tool or {}
+
+    urls: List[str] = []
+    u = (tool.get("health_url") or "").strip()
+    if u:
+        urls.append(u)
+
+    # Standard-Streamlit-Pfade als Fallback
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+
+    # Dedupe
+    seen, uniq = set(), []
+    for x in urls:
+        if x and x not in seen:
+            uniq.append(x); seen.add(x)
+
+    if not requests:
+        # ohne requests können wir keine echte Aussage treffen
+        return False, (time.perf_counter() - t0) * 1000.0
+
+    # Probe HEAD→GET
+    ok = False
+    for url in uniq:
+        try:
+            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                ok = True
+                break
+        except Exception:
+            pass
+        try:
+            r = requests.get(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                ok = True
+                break
+        except Exception:
+            pass
+
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    return ok, latency_ms
+
+def status_badge(up: bool, latency_ms: float) -> str:
+    color = "#22c55e" if up else "#ef4444"
+    label = "UP" if up else "DOWN"
+    lat_s = f"{latency_ms:.0f}ms" if latency_ms else "—"
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:.35rem;'
+        f'padding:.1rem .5rem;border-radius:999px;background:{color}1A;'
+        f'color:{color};font-weight:700;font-size:.78rem;">● {label} · {lat_s}</span>'
+    )
+
+# -----------------------------
+# Auth (optional)
+# -----------------------------
+def do_auth() -> Tuple[Optional[str], Optional[str], str]:
+    """Gibt (name, username, auth_status) zurück. auth_status in {'authenticated','failed','unset'}."""
+    if not stauth:
+        return ("Admin", "admin", "authenticated")  # Fallback: kein Auth-Paket → immer eingeloggter Admin
+
+    # Minimal-Konfig – Passwort bitte später austauschen!
+    config = {
+        "credentials": {
+            "usernames": {
+                "admin": {
+                    "email": "admin@example.com",
+                    "name": "Admin",
+                    # Standard-Hash: "admin123" (argon2) – bitte ersetzen!
+                    "password": "admin123",
+                    "roles": ["admin"],
+                    "allowed_tools": ["*"],
+                }
+            }
+        },
+        "cookie": {"name": "se_hub_auth", "key": "SE_KEY_1761102994", "expiry_days": 7},
+        "preauthorized": {"emails": []},
+    }
+
+    auth = stauth.Authenticate(
+        config["credentials"],
+        config["cookie"]["name"],
+        config["cookie"]["key"],
+        config["cookie"]["expiry_days"],
+    )
+
+    with st.sidebar:
+        st.caption(" ")
+        st.markdown("### 🔐 Login")
+        name, auth_status, username = auth.login("sidebar")  # neue API: nur "sidebar"/"main"
+        if auth_status == False:
+            st.error("Login fehlgeschlagen.")
+        if auth_status == None:
+            st.stop()
+
+        # Oben Logout + Info
+        st.divider()
+        auth.logout("Logout", "sidebar", key="logout_btn_fixed")
+        st.caption(f"**Eingeloggt als:** {name or '—'} ({username or '—'})")
+        st.divider()
+
+    return name, username, ("authenticated" if auth_status else "failed")
+
+# -----------------------------
+# UI
+# -----------------------------
+st.set_page_config(page_title="Tools Hub", page_icon="🧰", layout="wide", initial_sidebar_state="expanded")
+st.title("🧰 Search Experience – Tools Hub")
+
+# Login (oder Fallback)
+name, username, auth_state = do_auth()
+if auth_state != "authenticated":
+    st.stop()
+
+# Sidebar: Tools-Liste mit Badges
+with st.sidebar:
+    st.subheader("🧰 Tools")
+    for t in TOOLS:
+        slug = t["slug"]; port = int(t["port"])
+        try:
+            up, lat = check_health(port, slug)
+        except Exception:
+            up, lat = (False, 0.0)
+        href = f"{BASE_HREF}/{slug}/"
+        st.markdown(
+            f"""
+<div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-radius:.5rem;">
+  <div><span style="font-size:1rem;margin-right:.35rem;">{t.get('emoji','')}</span>
+       <a href="{href}" style="text-decoration:none;font-weight:600;">{t.get('name',slug)}</a></div>
+  {status_badge(up, lat)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    st.markdown("---")
+    # Live-Status Sekundentakt (optional)
+    st.checkbox("🔄 Live-Status (1 s)", key="live_status_on", value=False)
+
+# Hauptbereich: Karten mit Kurzbeschreibung + Startlinks
+st.markdown("## 🚀 Schnellzugriff")
+cols = st.columns(2)
+for i, t in enumerate(TOOLS):
+    with cols[i % 2]:
+        slug = t["slug"]; port = int(t["port"])
+        up, lat = check_health(port, slug)
+        st.markdown(
+            f"""
+<div style="border:1px solid #eee;border-radius:12px;padding:14px;margin-bottom:12px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-weight:700;font-size:1.05rem;">{t.get('emoji','')} {t.get('name',slug)}</div>
+    {status_badge(up, lat)}
+  </div>
+  <div style="opacity:.8;margin:.35rem 0 .75rem;">{t.get('desc','')}</div>
+  <a href="{BASE_HREF}/{slug}/" style="text-decoration:none;">
+    ➜ Öffnen
+  </a>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+# Auto-Refresh, wenn gewünscht
+try:
+    if st.session_state.get("live_status_on"):
+        time.sleep(1)
+        st.rerun()
+except Exception:
+    pass

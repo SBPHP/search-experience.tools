@@ -1,0 +1,105 @@
+import streamlit as st
+
+
+
+@st.cache_data(ttl=1, show_spinner=False)
+def check_health(port, slug, timeout: float = 1.8):
+    """
+    Robust Health:
+      - Sonderfall 'metadatacreator' (BasePath)
+      - bevorzugt tool.health_url / tool.health_path (session_state.tools > TOOLS)
+      - Defaults: /_stcore/health, /healthz, /
+      - HEAD -> GET Fallback, akzeptiert 2xx/3xx
+    Rückgabe: (ok: bool, latency_ms: float)
+    """
+    import time as _t
+    start = _t.perf_counter()
+
+    urls = []
+
+    # 0) harter Sonderfall
+    try:
+        if str(slug) == "metadatacreator":
+            urls.append("http://127.0.0.1:8505/tools/metadatacreator/_stcore/health")
+    except Exception:
+        pass
+
+    # tool-record suchen (session_state.tools > TOOLS)
+    def _find_tool(s):
+        try:
+            for t in (st.session_state.get("tools") or []):
+                if t.get("slug") == s:
+                    return t
+        except Exception:
+            pass
+        try:
+            for t in TOOLS:
+                if t.get("slug") == s:
+                    return t
+        except Exception:
+            pass
+        return {}
+
+    t = _find_tool(slug)
+
+    # 1) absolute health_url
+    try:
+        u = (t.get("health_url") or "").strip()
+        if u:
+            urls.append(u)
+    except Exception:
+        pass
+
+    # 2) relative health_path -> absolut
+    try:
+        hp = (t.get("health_path") or "").strip()
+        if hp:
+            urls.append(f"http://127.0.0.1:{port}{hp}")
+    except Exception:
+        pass
+
+    # 3) Defaults
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+
+    # Dedupe mit Reihenfolge
+    seen, uniq = set(), []
+    for x in urls:
+        if x and x not in seen:
+            uniq.append(x); seen.add(x)
+
+    # requests kann in manchen venvs fehlen
+    try:
+        import requests as _rq
+    except Exception:
+        return False, (_t.perf_counter() - start) * 1000.0
+
+    ok = False
+    for url in uniq:
+        # 1) HEAD
+        try:
+            r = _rq.head(url, timeout=timeout, allow_redirects=False)
+            sc = int(getattr(r, "status_code", 0)) or 0
+            if 200 <= sc < 400:
+                ok = True
+                break
+        except Exception:
+            pass
+        # 2) GET
+        try:
+            r = _rq.get(url, timeout=timeout, allow_redirects=False)
+            sc = int(getattr(r, "status_code", 0)) or 0
+            if 200 <= sc < 400:
+                ok = True
+                break
+        except Exception:
+            pass
+
+    latency_ms = (_t.perf_counter() - start) * 1000.0
+    return ok, latency_ms
+
+
+# ---- unified health implementation (injected) ----

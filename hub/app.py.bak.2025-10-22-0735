@@ -1,0 +1,509 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import os, sys, time, json, subprocess
+
+try:
+    import streamlit as st
+except Exception as e:
+    # Ohne Streamlit kein Hub
+    raise
+
+# requests ist optional – Health-Checks funktionieren dann eingeschränkt
+try:
+    import requests
+except Exception:
+    requests = None
+
+# Debug-Banner: stellt sicher, dass *irgendetwas* gerendert wird
+st.write("🟢 App läuft – Debug-Banner (temporär)")
+st.write("🟢 App läuft – Debug-Banner (temporär)")
+    # Session simulieren: eingeloggt als Admin
+    if st.session_state.get("authentication_status") is None:
+        st.session_state["authentication_status"] = True
+        st.session_state["name"] = st.session_state.get("name") or "Admin"
+        st.session_state["username"] = st.session_state.get("username") or "admin"
+
+    class _DummyAuth:
+        def login(self, location="sidebar", *args, **kwargs):
+            return None  # nichts tun
+        def logout(self, label="Logout", location="sidebar", key="logout_btn_fixed", *args, **kwargs):
+            if location == "sidebar":
+                with st.sidebar:
+                    st.button(label, key=key, use_container_width=True)
+            else:
+                st.button(label, key=key, use_container_width=True)
+
+    if "auth" not in globals():
+        auth = _DummyAuth()
+except Exception:
+    pass
+# === END NO-AUTH SHIM ===
+
+from auth_shim import get_config, do_auth, sidebar_header
+
+### AUTH CONFIG SHIM (auto)
+import sys as _sys
+try:
+    from hub_config import CONFIG as _HUB_CFG
+except Exception:
+    _HUB_CFG = None
+# bevorzugt vorhandene globale 'cfg' oder 'config', dann hub_config, sonst Fallback
+_cfg = (globals().get('cfg') or globals().get('config') or _HUB_CFG) or {
+    'credentials': {
+        'usernames': {
+            'admin': {
+                'name': 'Admin',
+                'password': '$2b$12$mMfVW1zzbGr0OOgEMXUdv.BPd9p8AZZ9MLrtPDNk1haxAuRg.07Xi',  # bcrypt('admin123')
+                'roles': ['admin'],
+                'allowed_tools': ['*']
+            }
+        }
+    },
+    'cookie': {'name': 'se_hub_auth', 'key': 'SE_KEY_AUTO', 'expiry_days': 7},
+    'preauthorized': {'emails': []}
+}
+### /AUTH CONFIG SHIM
+
+### NO_AUTH_BYPASS_START
+
+import streamlit as st
+
+
+
+# Schalter: Auth ist hart deaktiviert
+
+DISABLE_AUTH = True
+
+
+
+class _NoAuth:
+
+    def login(self, *a, **k):
+
+        return None
+
+    def logout(self, *a, **k):
+
+        return None
+
+
+
+# Dummy-Auth Objekt (falls Code irgendwo .logout() aufruft)
+
+auth = _NoAuth()
+
+
+
+def _auth_bypass_init():
+
+    st.session_state.setdefault("authentication_status", True)
+
+    st.session_state.setdefault("name", "Admin")
+
+    st.session_state.setdefault("username", "admin")
+
+
+
+# Alte Aufrufer variieren – wir bieten mehrere kompatible Wrapper an:
+
+def do_auth():
+
+    _auth_bypass_init()
+
+    return ("Admin", "admin", "authenticated")
+
+
+
+def _do_auth_safe():
+
+    _auth_bypass_init()
+
+    # 4 Werte zurückgeben, falls irgendwo 4 erwartet werden
+
+    return ("Admin", "admin", "authenticated", auth)
+
+
+
+def _do_auth_safe2():
+
+    _auth_bypass_init()
+
+    # 4 Werte zurückgeben, falls an anderer Stelle 4 entpackt werden
+
+    return ("Admin", "admin", "authenticated", auth)
+
+
+
+def sidebar_header(_auth=None, name=None, username=None):
+
+    _auth_bypass_init()
+
+    with st.sidebar:
+
+        # Kein Logout-Button, da No-Auth aktiv
+
+        st.caption("**Eingeloggt als:** Admin (admin)")
+
+        st.divider()
+
+### NO_AUTH_BYPASS_END
+
+# -*- coding: utf-8 -*-
+import os, time, json
+from typing import List, Tuple, Dict, Optional
+
+import streamlit as st
+
+# --- Auth-Config Shim: nimmt `config` oder `cfg` ---
+_cfg = None
+try:
+    _cfg = config
+except NameError:
+    try:
+        _cfg = cfg
+    except NameError:
+        _cfg = None
+
+# Optional: requests für Health-Checks
+try:
+    pass
+    import requests
+except Exception:
+    pass
+    requests = None
+
+# Optional: Login (wenn streamlit_authenticator installiert ist)
+try:
+    pass
+#     import streamlit_authenticator as stauth
+except Exception:
+    pass
+    stauth = None
+
+# -----------------------------
+# Konfiguration / Tools
+# -----------------------------
+BASE_HREF = "/tools"
+
+TOOLS: List[Dict] = [
+    {
+        "slug": "redirectmapper",
+        "name": "RedirectMapper",
+        "desc": "URL-Mapping & Bulk-Redirects prüfen",
+        "emoji": "🧭",
+        "port": 8502,
+        # Läuft am Root (kein BasePfad im Service) – Nginx strippt /tools/redirectmapper/
+        "health_url": "http://127.0.0.1:8502/_stcore/health",
+    },
+    {
+        "slug": "linkchecker",
+        "name": "LinkChecker",
+        "desc": "Broken Links & Statuscodes",
+        "emoji": "🔗",
+        "port": 8504,
+        "health_url": "http://127.0.0.1:8504/tools/linkchecker/_stcore/health",
+    },
+    {
+        "slug": "metadatacreator",
+        "name": "MetadataCreator",
+        "desc": "Meta Tags & Social Previews",
+        "emoji": "✍️",
+        "port": 8505,
+        "health_url": "http://127.0.0.1:8505/tools/metadatacreator/_stcore/health",
+    },
+    {
+        "slug": "contentgapper",
+        "name": "ContentGapper",
+        "desc": "Content Gaps & Ideen",
+        "emoji": "🧩",
+        "port": 8506,
+        "health_url": "http://127.0.0.1:8506/tools/contentgapper/_stcore/health",
+    },
+]
+
+# -----------------------------
+# Health-Check (stabil & simpel)
+# -----------------------------
+@st.cache_data(ttl=1, show_spinner=False)
+def check_health(port: int, slug: str, timeout: float = 1.8) -> Tuple[bool, float]:
+    """2xx–3xx = UP. Erst HEAD (schnell), dann GET. Nutzt ggf. absolute health_url je Tool."""
+    t0 = time.perf_counter()
+
+    # Tool lookup
+    tool = None
+    for t in TOOLS:
+        if t.get("slug") == slug:
+            tool = t
+            break
+    tool = tool or {}
+
+    urls: List[str] = []
+    u = (tool.get("health_url") or "").strip()
+    if u:
+        urls.append(u)
+
+    # Standard-Streamlit-Pfade als Fallback
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+
+    # Dedupe
+    seen, uniq = set(), []
+    for x in urls:
+        if x and x not in seen:
+            uniq.append(x); seen.add(x)
+
+    if not requests:
+        # ohne requests können wir keine echte Aussage treffen
+        return False, (time.perf_counter() - t0) * 1000.0
+
+    # Probe HEAD→GET
+    ok = False
+    for url in uniq:
+        try:
+            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                ok = True
+                break
+        except Exception:
+            pass
+        try:
+            r = requests.get(url, timeout=timeout, allow_redirects=False)
+            if 200 <= r.status_code < 400:
+                ok = True
+                break
+        except Exception:
+            pass
+
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    return ok, latency_ms
+
+def status_badge(up: bool, latency_ms: float) -> str:
+    color = "#22c55e" if up else "#ef4444"
+    label = "UP" if up else "DOWN"
+    lat_s = f"{latency_ms:.0f}ms" if latency_ms else "—"
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:.35rem;'
+        f'padding:.1rem .5rem;border-radius:999px;background:{color}1A;'
+        f'color:{color};font-weight:700;font-size:.78rem;">● {label} · {lat_s}</span>'
+    )
+
+# -----------------------------
+# Auth (optional)
+# -----------------------------
+def _do_auth_safe2() -> Tuple[Optional[str], Optional[str], str]:
+    """Gibt (name, username, auth_status) zurück. auth_status in {'authenticated','failed','unset'}."""
+    if not stauth:
+        return ("Admin", "admin", "authenticated")  # Fallback: kein Auth-Paket → immer eingeloggter Admin
+
+    # Minimal-Konfig – Passwort bitte später austauschen!
+    config = {
+        "credentials": {
+            "usernames": {
+                "admin": {
+                    "email": "admin@example.com",
+                    "name": "Admin",
+                    # Standard-Hash: "admin123" (argon2) – bitte ersetzen!
+                    "password": "admin123",
+                    "roles": ["admin"],
+                    "allowed_tools": ["*"],
+                }
+            }
+        },
+        "cookie": {"name": "se_hub_auth", "key": "SE_KEY_1761102994", "expiry_days": 7},
+        "preauthorized": {"emails": []},
+    }
+
+    try:
+        config
+    except NameError:
+        try:
+            config = cfg
+        except NameError:
+            import streamlit as st
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+if _cfg is None:
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+
+auth = stauth.Authenticate(
+        _cfg["credentials"],
+        _cfg["cookie"]["name"],
+        _cfg["cookie"]["key"],
+        _cfg["cookie"]["expiry_days"],
+    )
+
+with st.sidebar:
+        st.caption(" ")
+        st.markdown("### 🔐 Login")
+#         import streamlit_authenticator as stauth
+        auth = stauth.Authenticate(
+            _cfg["credentials"],
+            _cfg["cookie"]["name"],
+            _cfg["cookie"]["key"],
+            _cfg["cookie"]["expiry_days"],
+        )
+        auth.login("sidebar")
+        name = st.session_state.get("name")
+        username = st.session_state.get("username")
+        auth_status = st.session_state.get("authentication_status")
+        if auth_status is False:
+            st.error("Login fehlgeschlagen.")
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+        if auth_status is None:
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+        st.divider()
+        auth.logout("Logout", "sidebar", key="logout_btn_fixed")
+        st.caption(f"**Eingeloggt als:** {name or '-'} ({username or '-'})")
+        st.divider()
+
+# -----------------------------
+# UI
+# -----------------------------
+st.set_page_config(page_title="Tools Hub", page_icon="🧰", layout="wide", initial_sidebar_state="expanded")
+st.title("🧰 Search Experience – Tools Hub")
+
+# Login (oder Fallback)
+name, username, auth_state, auth = _do_auth_safe2()
+if auth_state != "authenticated":
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+
+# Sidebar: Tools-Liste mit Badges
+with st.sidebar:
+    st.subheader("🧰 Tools")
+    for t in TOOLS:
+        slug = t["slug"]; port = int(t["port"])
+        try:
+            up, lat = check_health(port, slug)
+        except Exception:
+            up, lat = (False, 0.0)
+        href = f"{BASE_HREF}/{slug}/"
+        st.markdown(
+            f"""
+<div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-radius:.5rem;">
+  <div><span style="font-size:1rem;margin-right:.35rem;">{t.get('emoji','')}</span>
+       <a href="{href}" style="text-decoration:none;font-weight:600;">{t.get('name',slug)}</a></div>
+  {status_badge(up, lat)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    st.markdown("---")
+    # Live-Status Sekundentakt (optional)
+    st.checkbox("🔄 Live-Status (1 s)", key="live_status_on", value=False)
+
+# Hauptbereich: Karten mit Kurzbeschreibung + Startlinks
+st.markdown("## 🚀 Schnellzugriff")
+cols = st.columns(2)
+for i, t in enumerate(TOOLS):
+    with cols[i % 2]:
+        slug = t["slug"]; port = int(t["port"])
+        up, lat = check_health(port, slug)
+        st.markdown(
+            f"""
+<div style="border:1px solid #eee;border-radius:12px;padding:14px;margin-bottom:12px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-weight:700;font-size:1.05rem;">{t.get('emoji','')} {t.get('name',slug)}</div>
+    {status_badge(up, lat)}
+  </div>
+  <div style="opacity:.8;margin:.35rem 0 .75rem;">{t.get('desc','')}</div>
+  <a href="{BASE_HREF}/{slug}/" style="text-decoration:none;">
+    ➜ Öffnen
+  </a>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+# Auto-Refresh, wenn gewünscht
+try:
+    if st.session_state.get("live_status_on"):
+        time.sleep(1)
+        st.rerun()
+except Exception:
+    pass
+
+# ===== Auth Helper (rückwärts-kompatibel zur aktuellen streamlit_authenticator-Version) =====
+def _do_auth_safe2():
+    """
+    Login-Wrapper für streamlit_authenticator:
+    - Ruft authenticator.login("sidebar") auf (liefert bei deiner Version nichts zurück)
+    - Liest name/username/authentication_status aus st.session_state
+    - Gibt (name, username, auth_state, auth) zurück
+    """
+    import streamlit as st
+    try:
+        pass
+#         import streamlit_authenticator as stauth
+    except Exception as e:
+        st.error(f"Auth-Modul fehlt: {e}")
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+
+    # cfg wird global vorausgesetzt (dein Dict mit credentials & cookie)
+    cfg = globals().get("cfg") or {}
+    creds = cfg.get("credentials", {}) or {}
+    cookie = cfg.get("cookie", {}) or {}
+    cookie_name = cookie.get("name", "se_auth")
+    cookie_key  = cookie.get("key",  "se_key")
+    cookie_days = int(cookie.get("expiry_days", 7))
+
+    auth = stauth.Authenticate(
+        credentials=creds,
+        cookie_name=cookie_name,
+        key=cookie_key,
+        cookie_expiry_days=cookie_days,
+    )
+
+    # NICHT entpacken – bei deiner Version setzt login() nur session_state
+    with st.sidebar:
+        try:
+            auth.login("sidebar")
+        except Exception as e:
+            st.error(f"Login-Fehler: {e}")
+
+    name = st.session_state.get("name")
+    username = st.session_state.get("username")
+    auth_state = st.session_state.get("authentication_status")
+    return name, username, auth_state, auth
+# --- SAFE AUTH FALLBACK (appended) ---
+def _do_auth_safe2():
+    """
+    Robuster Login-Wrapper:
+      - Ruft auth.login("sidebar") OHNE Unpacking auf (manche Versionen liefern None zurück)
+      - Liest Werte aus st.session_state und gibt (name, username, auth_state, auth) zurück
+    """
+    import streamlit as st
+    try:
+        pass
+#         import streamlit_authenticator as stauth
+    except Exception as e:
+        st.error(f"Auth-Modul fehlt: {e}")
+# st.write("⏸ stop() unterdrückt für Debug")  # disabled for debug
+
+    cfg = globals().get("cfg") or {}
+    creds = cfg.get("credentials", {}) or {}
+    cookie = cfg.get("cookie", {}) or {}
+    cookie_name = cookie.get("name", "se_auth")
+    cookie_key  = cookie.get("key",  "se_key")
+    cookie_days = int(cookie.get("expiry_days", 7))
+
+    auth = stauth.Authenticate(
+        credentials=creds,
+        cookie_name=cookie_name,
+        key=cookie_key,
+        cookie_expiry_days=cookie_days,
+    )
+
+    # Wichtig: nichts entpacken, viele Versionen setzen nur session_state
+    try:
+        with st.sidebar:
+            auth.login("sidebar")
+    except Exception as e:
+        st.error(f"Login-Fehler: {e}")
+
+    name       = st.session_state.get("name")
+    username   = st.session_state.get("username")
+    auth_state = st.session_state.get("authentication_status")
+    return name, username, auth_state, auth

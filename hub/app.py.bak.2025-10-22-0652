@@ -1,0 +1,58 @@
+
+
+
+def _do_auth_safe2():
+    import streamlit as st
+    try:
+        import streamlit_authenticator as stauth
+    except Exception as e:
+        st.error(f"Auth-Modul fehlt: {e}")
+        return None, None, "failed"
+
+    # Konfig aus globalem cfg/config/HUB_CONFIG
+    _cfg = (globals().get("config") or globals().get("cfg") or globals().get("HUB_CONFIG"))
+    if not _cfg:
+        st.error("Fehlende Auth-Konfiguration: weder config/cfg noch HUB_CONFIG vorhanden.")
+        return None, None, "failed"
+
+    creds = _cfg.get("credentials", {})
+    cookie = _cfg.get("cookie", {}) or {}
+    cookie_name = cookie.get("name", "se_hub_auth")
+    cookie_key  = cookie.get("key",  "SE_KEY")
+    cookie_days = int(cookie.get("expiry_days", 7))
+
+    auth = stauth.Authenticate(
+        credentials=creds,
+        cookie_name=cookie_name,
+        key=cookie_key,
+        cookie_expiry_days=cookie_days,
+    )
+
+    # Wichtig: nicht entpacken – setzt nur session_state
+    with st.sidebar:
+        try:
+            auth.login("sidebar")
+        except Exception as e:
+            st.error(f"Login-Fehler: {e}")
+
+    name       = st.session_state.get("name")
+    username   = st.session_state.get("username")
+    auth_state = st.session_state.get("authentication_status")
+
+    # Sidebar-Header (Logout + Info) immer zeichnen
+    with st.sidebar:
+        st.divider()
+        try:
+            auth.logout("Logout", "sidebar", key="logout_btn_fixed")
+        except Exception:
+            pass
+        st.caption(f"**Eingeloggt als:** {name or '-'} ({username or '-'})")
+        st.divider()
+
+    if auth_state is True:
+        return name, username, "authenticated"
+    elif auth_state is False:
+        return name, username, "failed"
+    else:
+        return name, username, "pending"
+

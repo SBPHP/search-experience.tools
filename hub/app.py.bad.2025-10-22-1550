@@ -1,0 +1,133 @@
+import os, io, subprocess, time
+import streamlit as st
+
+# ---- Page config (defensiv)
+try:
+    st.set_page_config(page_title="Tools Hub", layout="wide")
+except Exception:
+    pass
+
+st.info("DEBUG WRAPPER aktiv – Core-App wird geladen …")
+
+# ---- Core laden
+CORE_FILE = os.path.join(os.path.dirname(__file__), "app_core.py")
+if os.path.isfile(CORE_FILE):
+    try:
+        with io.open(CORE_FILE, "r", encoding="utf-8") as f:
+            code = f.read()
+        # __name__ als "__main__" setzen, damit evtl. main() ausgeführt wird
+        exec(compile(code, CORE_FILE, "exec"), {"__name__": "__main__", "st": st})
+        st.success("Core-App ausgeführt.")
+    except Exception as e:
+        st.error("Fehler in der Core-App:")
+        st.exception(e)
+else:
+    st.warning(f"Core-Datei fehlt: {CORE_FILE}")
+
+st.divider()
+st.caption("Wrapper aktiv: Fallback-Dashboard unten wird immer gerendert.")
+
+# =====================================================================
+# ===============      F A L L B A C K   D A S H B O A R D     ========
+# =====================================================================
+
+def run(cmd, timeout=10):
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+
+def unit_status(unit: str) -> str:
+    p = run(["systemctl", "is-active", unit])
+    return (p.stdout or p.stderr).strip()
+
+def unit_action(unit: str, action: str):
+    p = run(["systemctl", action, unit])
+    ok = p.returncode == 0
+    msg = (p.stdout or p.stderr).strip() or f"{unit} {action}"
+    return ok, msg
+
+def health_local(port: int, path: str):
+    # path z.B. "tools/linkchecker"
+    hp = f"/{path}/_stcore/health" if path else "/_stcore/health"
+    try:
+        p = run(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", f"http://127.0.0.1:{port}{hp}"], timeout=5)
+        return (p.stdout.strip() == "200", f"HTTP {p.stdout.strip()}")
+    except Exception as e:
+        return False, f"err: {e}"
+
+def badge(ok: bool) -> str:
+    return "🟢 OK" if ok else "🔴 DOWN"
+
+BASE_PATH = os.environ.get("HUB_BASE_PATH", "tools")
+
+SERVICES = {
+    "linkchecker":     {"title":"LinkChecker",      "unit":"linkchecker.service",     "port":8504, "path":"tools/linkchecker"},
+    "metadatacreator": {"title":"MetadataCreator",  "unit":"metadatacreator.service", "port":8505, "path":"tools/metadatacreator"},
+    "redirectmapper":  {"title":"RedirectMapper",   "unit":"redirectmapper.service",  "port":8506, "path":"tools/redirectmapper"},
+    "contentgapper":   {"title":"ContentGapper",    "unit":"contentgapper.service",   "port":8507, "path":"tools/contentgapper"},
+}
+
+# Kleines CSS ohne f-Strings
+st.markdown("""
+<style>
+.block { padding: 12px; border: 1px solid #e5e7eb; border-radius: 12px; margin-bottom: 12px; }
+.kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 16px; }
+code { background:#f6f8fa; padding:2px 6px; border-radius:6px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Search Experience – Tools Hub")
+st.caption(f"Base path: /{BASE_PATH} · Host: 127.0.0.1")
+
+with st.expander("Quick Actions / System"):
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Reload Nginx", use_container_width=True):
+            ok, msg = unit_action("nginx.service", "reload")
+            st.success(msg) if ok else st.error(msg)
+    with c2:
+        if st.button("Test Nginx Config", use_container_width=True):
+            p = run(["nginx", "-t"])
+            st.code((p.stdout + "\n" + p.stderr).strip() or "nginx -t: keine Ausgabe", language="bash")
+
+for key, cfg in SERVICES.items():
+    with st.container():
+        st.subheader(cfg["title"])
+        col1, col2, col3, col4, col5 = st.columns([1,1,1,2,2])
+
+        with col1:
+            st.write("**Status**")
+            st.write(unit_status(cfg["unit"]) or "unknown")
+
+        with col2:
+            st.write("**Health**")
+            ok, msg = health_local(cfg["port"], cfg["path"])
+            st.write(f"{badge(ok)} · {msg}")
+
+        with col3:
+            st.write("**Actions**")
+            if st.button("Start", key=f"{key}_start"): 
+                ok, msg = unit_action(cfg["unit"], "start"); st.toast("Start: " + ("OK" if ok else msg)); time.sleep(0.3); st.rerun()
+            if st.button("Stop", key=f"{key}_stop"):
+                ok, msg = unit_action(cfg["unit"], "stop"); st.toast("Stop: " + ("OK" if ok else msg)); time.sleep(0.3); st.rerun()
+            if st.button("Restart", key=f"{key}_restart"):
+                ok, msg = unit_action(cfg["unit"], "restart"); st.toast("Restart: " + ("OK" if ok else msg)); time.sleep(0.3); st.rerun()
+
+        with col4:
+            st.markdown(f"**Local**:  http://127.0.0.1:{cfg['port']}/{cfg['path']}/  ")
+            st.markdown(f"**Health**: http://127.0.0.1:{cfg['port']}/{cfg['path']}/_stcore/health")
+
+        with col5:
+            st.markdown(
+                """
+<div class="block">
+  <div class="kv">
+    <div>Unit</div><div><code>{unit}</code></div>
+    <div>Port</div><div><code>{port}</code></div>
+    <div>BasePath</div><div><code>/{path}</code></div>
+  </div>
+</div>
+""".format(unit=cfg["unit"], port=cfg["port"], path=cfg["path"]),
+                unsafe_allow_html=True
+            )
+
+st.divider()
+st.caption("Fallback-Dashboard aktiv (wird immer gerendert).")

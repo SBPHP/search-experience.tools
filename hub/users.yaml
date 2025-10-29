@@ -1,0 +1,22 @@
+credentials:
+  usernames:
+    admin:
+      name: Admin
+      email: admin@example.com
+      password: $2b$12$zrBsgz9BPqISFZdNQPmAs.cNiBR.oyhRphO/Fp5HNss4kcxxEcLdm
+      roles:
+      - admin
+      allowed_tools:
+      - '*'
+    editor:
+      name: Editor
+      email: editor@example.com
+      password: $2b$12$GN/n0rGlTsXwP8vL.wbmu.5eYVIHSmk//hcAETCrJqdq7RNAEfIVy
+      roles:
+      - editor
+      allowed_tools:
+      - metadatacreator
+cookie:
+  name: se_auth
+  key: CHANGE_ME_TO_A_LONG_RANDOM_SECRET_1234567890
+  expiry_days: 7

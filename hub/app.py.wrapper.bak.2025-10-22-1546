@@ -1,0 +1,65 @@
+import os, io, sys, traceback, streamlit as st
+
+# Page config defensiv
+try:
+    st.set_page_config(page_title="Tools Hub (Wrapper)", layout="wide")
+except Exception:
+    pass
+
+st.info("DEBUG WRAPPER aktiv – Core-App wird geladen …")
+
+# --- Monkeypatches ---
+# st.stop -> warnen statt hart stoppen (damit UI sichtbar bleibt)
+def _no_stop(*a, **k):
+    st.warning("st.stop() abgefangen durch Debug-Wrapper.")
+# leere Toasts absichern
+_orig_toast = getattr(st, "toast", lambda *a, **k: None)
+def _safe_toast(msg="", *a, **k):
+    if not str(msg).strip():
+        msg = "OK"
+    return _orig_toast(msg, *a, **k)
+
+# switch_page & rerun NICHT blockieren, nur loggen
+_orig_switch_page = getattr(st, "switch_page", None)
+if _orig_switch_page:
+    def _log_switch_page(*a, **k):
+        try:
+            st.info(f"switch_page aufgerufen mit args={a} kwargs={k}")
+        except Exception:
+            pass
+        return _orig_switch_page(*a, **k)
+    setattr(st, "switch_page", _log_switch_page)
+
+_orig_rerun = getattr(st, "experimental_rerun", None)
+if _orig_rerun:
+    def _log_rerun(*a, **k):
+        try:
+            st.info("experimental_rerun() aufgerufen")
+        except Exception:
+            pass
+        return _orig_rerun(*a, **k)
+    setattr(st, "experimental_rerun", _log_rerun)
+
+# Anwenden
+setattr(st, "stop", _no_stop)
+setattr(st, "toast", _safe_toast)
+
+# Häufiges Gate: ready-Flag
+st.session_state["ready"] = True
+
+# --- Core laden/ausführen ---
+CORE_FILE = os.path.join(os.path.dirname(__file__), "app_core.py")
+if not os.path.isfile(CORE_FILE):
+    st.error(f"Core-Datei fehlt: {CORE_FILE}")
+else:
+    try:
+        with io.open(CORE_FILE, "r", encoding="utf-8") as f:
+            code = f.read()
+        exec(compile(code, CORE_FILE, "exec"), {"__name__": "__main__", "st": st})
+        st.success("Core-App ausgeführt.")
+    except Exception as e:
+        st.error("Fehler in der Core-App:")
+        st.exception(e)
+
+st.divider()
+st.caption("Wrapper aktiv: stop entschärft, leere toasts gefixt; switch_page & rerun sind erlaubt (mit Log).")

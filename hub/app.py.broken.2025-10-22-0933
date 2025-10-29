@@ -1,0 +1,591 @@
+# -*- coding: utf-8 -*-
+import os, subprocess, time
+import streamlit as st
+if "live_status_on" not in st.session_state:
+    st.session_state["live_status_on"] = False
+
+st.session_state.setdefault("live_status_on", False)
+from extras import render_sidebar_bits, render_tiles, render_seo_quick
+
+
+def render_sidebar_hardreset():
+    import streamlit as st
+    from time import sleep
+
+    def _safe_clear_health():
+        try:
+            check_health.clear()
+        except Exception:
+            pass
+
+    if False:
+        pass
+st.session_state["live_status_on"] = live
+        st.markdown("---")
+
+        # Tools
+        tools = []
+        try:
+            tools = get_tools()
+        except Exception:
+            try:
+                tools = TOOLS
+            except Exception:
+                tools = []
+
+        for t in tools:
+            slug = t.get("slug","")
+            name = t.get("name", slug)
+            port = int(t.get("port",0) or 0)
+            emoji = t.get("emoji","")
+            try:
+                up, lat = check_health(port, slug)
+            except Exception:
+                up, lat = (False, 0.0)
+            href = f"/tools/{slug}/" if slug != "hub" else "/tools/"
+            # Badge
+            try:
+                badge_html = status_badge(up, lat)
+            except Exception:
+                label = "UP" if up else "DOWN"
+                badge_html = f"<span style='padding:.1rem .45rem;border-radius:999px;background:rgba(34,197,94,.1);color:#22c55e;font-weight:700;font-size:.78rem;'>● {label}</span>"
+
+            st.markdown(
+                f"""
+<div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-radius:.5rem;">
+  <div><span style="margin-right:.35rem">{emoji}</span>
+       <a href="{href}" style="text-decoration:none;font-weight:600">{name}</a></div>
+  {badge_html}
+</div>""",
+                unsafe_allow_html=True
+            )
+        st.markdown("---")
+
+        # Tool hinzufügen
+        st.markdown("### ➕ Tool hinzufügen")
+        with st.form("add_tool_form", clear_on_submit=True):
+            c1,c2 = st.columns(2)
+            name = c1.text_input("Name", placeholder="Mein Tool")
+            slug = c2.text_input("Slug", placeholder="meintool")
+            c3,c4 = st.columns(2)
+            port = c3.number_input("Port", min_value=1, max_value=65535, step=1, value=8507)
+            emoji = c4.text_input("Emoji", placeholder="🧩")
+            health_path = st.text_input("Health-Path (optional)", placeholder="/tools/slug/_stcore/health")
+            submitted = st.form_submit_button("Hinzufügen", type="primary", use_container_width=True)
+
+        if submitted:
+            entry = {
+                "name": (name or "").strip(),
+                "slug": (slug or "").strip(),
+                "port": int(port),
+                "emoji": (emoji or "").strip(),
+                "health_path": (health_path or "").strip(),
+            }
+            ok = False; msg = ""
+            try:
+                ok, msg = add_tool(entry)
+            except Exception as e:
+                msg = f"Fehler: {e}"
+            (st.success if ok else st.error)(msg)
+            if ok:
+                _safe_clear_health()
+                st.rerun()
+
+        # Auto-Refresh
+        if st.session_state.get("live_status_on", False):
+            sleep(1)
+            st.rerun()
+
+
+# requests ist optional – Health-Checks laufen auch ohne (dann nur systemd)
+try:
+    import requests
+except Exception:
+    requests = None
+
+# -------- Grundkonfig --------
+st.set_page_config(
+    page_title="Search Experience – Tools Hub",
+    page_icon="🧰",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Tool-Liste (Ports bitte anpassen falls anders)
+TOOLS = [
+    {
+        "name": "RedirectMapper",
+        "slug": "redirectmapper",
+        "emoji": "🔀",
+        "port": 8502,
+        # läuft am Root der App → Standard-Health reicht
+    },
+    {
+        "name": "LinkChecker",
+        "slug": "linkchecker",
+        "emoji": "🔗",
+        "port": 8504,
+    },
+    {
+        "name": "MetadataCreator",
+        "slug": "metadatacreator",
+        "emoji": "✍️",
+        "port": 8505,
+        # eigener Health-Pfad wegen BaseUrlPath
+        "health_path": "/tools/metadatacreator/_stcore/health",
+    },
+    {
+        "name": "ContentGapper",
+        "slug": "contentgapper",
+        "emoji": "📉",
+        "port": 8506,
+    },
+    {
+        "name": "Hub",
+        "slug": "hub",
+        "emoji": "🧰",
+        "port": 8510,
+        "health_path": "/tools/_stcore/health",
+    },
+]
+
+# -------- Utils --------
+def status_badge(up: bool, latency_ms: float) -> str:
+    color = "#22c55e" if up else "#ef4444"
+    label = "UP" if up else "DOWN"
+    lat   = f"{latency_ms:.0f}ms" if latency_ms > 0 else "—"
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:.35rem;'
+        f'padding:.1rem .55rem;border-radius:999px;background:{color}1A;'
+        f'color:{color};font-weight:700;font-size:.78rem;">● {label} · {lat}</span>'
+    )
+
+def run_ctl(action: str, slug: str) -> tuple[bool, str]:
+    """start/stop/restart/status via /usr/local/bin/streamlit-toolctl (optional)."""
+    bin_path = "/usr/local/bin/streamlit-toolctl"
+    if not os.path.exists(bin_path) or not os.access(bin_path, os.X_OK):
+        return False, "toolctl nicht vorhanden (optional)"
+    try:
+        out = subprocess.check_output([bin_path, action, slug], text=True, stderr=subprocess.STDOUT, timeout=8)
+        return True, out.strip()
+    except subprocess.CalledProcessError as e:
+        return False, (e.output or f"Exit {e.returncode}").strip()
+    except Exception as e:
+        return False, str(e)
+
+@st.cache_data(ttl=1, show_spinner=False)
+def check_health(port: int, slug: str, timeout: float = 1.8) -> tuple[bool, float]:
+    """Robuster Health-Check:
+       1) systemd is-active (wenn möglich)
+       2) HTTP-HEAD → HTTP-GET (2xx/3xx = OK), inkl. spezieller health_path.
+    """
+    t0 = time.perf_counter()
+    ok = False
+
+    # 1) systemd
+    try:
+        unit = {
+            "metadatacreator": "se-metadatacreator.service",
+            "redirectmapper":  "se-redirectmapper.service",
+            "linkchecker":     "se-linkchecker.service",
+            "contentgapper":   "se-contentgapper.service",
+            "hub":             "search-experience-hub.service",
+        }.get(slug)
+        if unit and shutil.which("systemctl"):
+            out = subprocess.check_output(["systemctl", "is-active", unit], text=True, timeout=1.2).strip()
+            if out == "active":
+                ok = True
+    except Exception:
+        pass
+
+    # 2) HTTP Health (wenn requests da ist oder systemd nicht already OK)
+    urls = []
+    # tool-spezifisch:
+    tp = next((t for t in TOOLS if t.get("slug")==slug), {})
+    hp = (tp.get("health_path") or "").strip()
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+    # default-Pfade:
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+    seen, uniq = set(), []
+    for u in urls:
+        if u not in seen:
+            uniq.append(u); seen.add(u)
+
+    if not ok and requests is not None:
+        def _probe(url: str) -> int:
+            try:
+                r = requests.head(url, timeout=timeout, allow_redirects=False)
+                if 200 <= r.status_code < 400: return r.status_code
+            except Exception:
+                pass
+            try:
+                r = requests.get(url, timeout=timeout, allow_redirects=False)
+                return r.status_code
+            except Exception:
+                return 0
+        for u in uniq:
+            code = _probe(u)
+            if 200 <= code < 400:
+                ok = True
+                break
+
+    lat = (time.perf_counter() - t0) * 1000.0
+    return ok, lat
+
+# shutil wird nur gebraucht, wenn systemd genutzt werden kann (oben referenziert)
+import shutil  # nach der Funktion importiert ist okay, dank Python-Name Binding beim Call
+
+# -------- Sidebar --------
+# -------- Main --------
+st.title("🧰 Search Experience – Tools Hub")
+render_sidebar_bits()
+
+render_tiles()
+
+st.markdown("---")
+
+render_seo_quick()
+
+
+# Karten-Ansicht
+cols = st.columns(2)
+for idx, t in enumerate(TOOLS):
+    with cols[idx % 2]:
+        st.container(border=True)
+        st.markdown(f"#### {t.get('emoji','')} {t['name']}")
+        slug = t["slug"]; port = int(t["port"])
+        up, lat = False, 0.0
+        try:
+            up, lat = check_health(port, slug)
+        except Exception:
+            pass
+        st.markdown(status_badge(up, lat), unsafe_allow_html=True)
+        href = f"/tools/{slug}/" if slug!="hub" else "/tools/"
+        st.link_button("Öffnen", href, use_container_width=True)
+
+        # Steuerung (optional)
+        c1, c2, c3, c4 = st.columns(4)
+        if c1.button("Start", key=f"s_{slug}"):
+            ok, out = run_ctl("start", slug); st.toast(("✅ "+out) if ok else ("❌ "+out))
+            try: check_health.clear()
+            except: pass
+            st.rerun()
+        if c2.button("Stop", key=f"t_{slug}"):
+            ok, out = run_ctl("stop", slug); st.toast(("✅ "+out) if ok else ("❌ "+out))
+            try: check_health.clear()
+            except: pass
+            st.rerun()
+        if c3.button("Restart", key=f"r_{slug}"):
+            ok, out = run_ctl("restart", slug); st.toast(("✅ "+out) if ok else ("❌ "+out))
+            try: check_health.clear()
+            except: pass
+            st.rerun()
+        if c4.button("Status", key=f"st_{slug}"):
+            ok, out = run_ctl("status", slug); st.code(out or "(kein Output)")
+
+# Auto-Refresh (sekündlich), wenn in Sidebar aktiviert
+if st.session_state.get("live_status_on", False):
+    time.sleep(1)
+    st.rerun()
+
+
+# =========================================================
+# 📦 Tools – Übersicht & Verwaltung (zentral, unter den Kacheln)
+# =========================================================
+def _status_badge_fallback(up: bool, lat_ms: float) -> str:
+    try:
+        return status_badge(up, lat_ms)  # wenn vorhanden, benutze die schöne Variante
+    except Exception:
+        color = "#22c55e" if up else "#ef4444"
+        label = "UP" if up else "DOWN"
+        lat_s = f"{lat_ms:.0f}ms" if lat_ms else "—"
+        return f"<span style='display:inline-flex;align-items:center;gap:.35rem;padding:.1rem .45rem;border-radius:999px;background:{color}1A;color:{color};font-weight:700;font-size:.78rem;'>● {label} · {lat_s}</span>"
+
+def _ctl(action: str, slug: str) -> tuple[bool,str]:
+    # nutzt dein streamlit-toolctl, wenn vorhanden
+    try:
+        ok, out = run_ctl([action, slug])
+        return (bool(ok), str(out))
+    except Exception as e:
+        return (False, f"ctl fehlgeschlagen: {e}")
+
+def _safe_health(port: int, slug: str) -> tuple[bool, float]:
+    try:
+        return check_health(int(port or 0), slug)
+    except Exception:
+        return (False, 0.0)
+
+def _tool_href(slug: str) -> str:
+    return "/tools/" if slug == "hub" else f"/tools/{slug}/"
+
+def render_tools_center():
+    import streamlit as st
+
+    tools = []
+    try:
+        tools = list(get_tools())
+    except Exception:
+        # Fallback aus Session, falls vorhanden
+        tools = list(st.session_state.get("tools") or [])
+
+    st.markdown("## 🧰 Tools – Übersicht & Verwaltung")
+
+    if not tools:
+        st.info("Noch keine Tools konfiguriert.")
+    else:
+        for t in tools:
+            slug = t.get("slug","")
+            name = t.get("name", slug or "—")
+            port = int(t.get("port",0) or 0)
+            emoji = t.get("emoji","")
+            up, lat = _safe_health(port, slug)
+            href = _tool_href(slug)
+
+            st.markdown(
+                f"""<div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .75rem;border:1px solid #e5e7eb;border-radius:.75rem;margin:.35rem 0;">
+                       <div style="display:flex;align-items:center;gap:.5rem;">
+                         <div style="font-size:1.1rem">{emoji}</div>
+                         <div style="font-weight:600"><a href="{href}" style="text-decoration:none;">{name}</a></div>
+                         <div style="color:#6b7280">:{port}</div>
+                       </div>
+                       <div>{_status_badge_fallback(up,lat)}</div>
+                   </div>""",
+                unsafe_allow_html=True
+            )
+
+            c1, c2, c3, c4 = st.columns([1,1,1,2])
+            with c1:
+                if st.button("Start", key=f"start_{slug}", use_container_width=True):
+                    ok,out = _ctl("start", slug); (st.success if ok else st.error)(out); st.rerun()
+            with c2:
+                if st.button("Stop", key=f"stop_{slug}", use_container_width=True):
+                    ok,out = _ctl("stop", slug); (st.success if ok else st.error)(out); st.rerun()
+            with c3:
+                if st.button("Restart", key=f"restart_{slug}", use_container_width=True):
+                    ok,out = _ctl("restart", slug); (st.success if ok else st.error)(out); st.rerun()
+            with c4:
+                if st.button("Status", key=f"status_{slug}", use_container_width=True):
+                    ok,out = _ctl("status", slug); (st.info if ok else st.error)(out)
+
+    st.markdown("---")
+    st.markdown("### ➕ Tool hinzufügen")
+    with st.form("add_tool_form_center", clear_on_submit=True):
+        c1,c2 = st.columns(2)
+        name = c1.text_input("Name", placeholder="Mein Tool")
+        slug = c2.text_input("Slug", placeholder="meintool")
+        c3,c4 = st.columns(2)
+        port = c3.number_input("Port", min_value=1, max_value=65535, step=1, value=8507)
+        emoji = c4.text_input("Emoji", placeholder="🧩")
+        health_path = st.text_input("Health-Path (optional)", placeholder="/tools/slug/_stcore/health")
+        submitted = st.form_submit_button("Hinzufügen", type="primary", use_container_width=True)
+    if submitted:
+        payload = {"name": name.strip(), "slug": slug.strip(), "port": int(port), "emoji": emoji.strip(),
+                   "health_path": (health_path.strip() if health_path else "")}
+        ok, msg = False, "add_tool() nicht verfügbar"
+        try:
+            ok, msg = add_tool(payload)   # bevorzugt vorhandene Funktion
+        except Exception:
+            # kleiner Fallback: nur in Session anlegen
+            try:
+                arr = list(st.session_state.get("tools") or [])
+                arr.append(payload); st.session_state["tools"] = arr
+                ok, msg = True, "(nur Session) Tool hinzugefügt"
+            except Exception as e:
+                ok, msg = False, f"Fehler: {e}"
+        (st.success if ok else st.error)(msg)
+        if ok:
+            try: check_health.clear()
+            except Exception: pass
+            st.rerun()
+
+    st.markdown("### 🗑️ Tool löschen")
+    # Kandidaten aus aktueller Liste
+    slugs = [t.get("slug","") for t in tools if t.get("slug")]
+    if not slugs:
+        st.caption("Keine löschbaren Tools gefunden.")
+    else:
+        del_slug = st.selectbox("Tool auswählen", slugs, key="del_tool_select_center")
+        if st.button("Löschen", key=f"delete_{del_slug}", type="secondary"):
+            ok, msg = False, "remove_tool() nicht verfügbar"
+            try:
+                ok, msg = remove_tool(del_slug)  # wenn vorhanden
+            except Exception:
+                # Session-Fallback
+                try:
+                    arr = [t for t in (st.session_state.get("tools") or []) if t.get("slug") != del_slug]
+                    st.session_state["tools"] = arr
+                    ok, msg = True, f"(nur Session) {del_slug} entfernt"
+                except Exception as e:
+                    ok, msg = False, f"Fehler: {e}"
+            (st.success if ok else st.error)(msg)
+            if ok:
+                try: check_health.clear()
+                except Exception: pass
+                st.rerun()
+
+# =========================================================
+# 📦 Tools – Übersicht & Verwaltung (zentral, unter den Kacheln)
+# =========================================================
+def _status_badge_safe(up: bool, lat_ms: float) -> str:
+    try:
+        return status_badge(up, lat_ms)  # bevorzugt bestehende Badge-Funktion
+    except Exception:
+        color = "#22c55e" if up else "#ef4444"
+        label = "UP" if up else "DOWN"
+        lat_s = f"{lat_ms:.0f}ms" if lat_ms else "—"
+        return (
+            f"<span style='display:inline-flex;align-items:center;gap:.35rem;"
+            f"padding:.1rem .45rem;border-radius:999px;background:{color}1A;"
+            f"color:{color};font-weight:700;font-size:.78rem;'>● {label} · {lat_s}</span>"
+        )
+
+def _ctl(action: str, slug: str) -> tuple[bool,str]:
+    try:
+        return run_ctl([action, slug])
+    except Exception as e:
+        return False, f"ctl fehlgeschlagen: {e}"
+
+def _health_safe(port: int, slug: str, timeout: float = 1.8) -> tuple[bool, float]:
+    try:
+        return check_health(int(port or 0), slug, timeout=timeout)
+    except Exception:
+        return False, 0.0
+
+def render_tools_center():
+    import streamlit as st
+
+    # ---------- Liste mit Kärtchen/Zeilen ----------
+    st.markdown("## 🧰 Tools (zentral)")
+    tools = []
+    try:
+        tools = list(get_tools())
+    except Exception:
+        st.info("Hinweis: get_tools() nicht verfügbar.")
+        tools = []
+
+    # Je Tool: Status + Aktionen
+    for t in tools:
+        slug = t.get("slug","")
+        name = t.get("name", slug)
+        port = int(t.get("port",0) or 0)
+        emoji = t.get("emoji","")
+        href  = f"/tools/{slug}/" if slug not in ("hub","") else "/tools/"
+
+        up, lat = _health_safe(port, slug)
+        badge = _status_badge_safe(up, lat)
+
+        with st.container(border=True):
+            c1, c2 = st.columns([0.72, 0.28])
+            with c1:
+                st.markdown(
+                    f"<div style='display:flex;align-items:center;gap:.5rem'>"
+                    f"<span style='font-size:1.1rem'>{emoji}</span>"
+                    f"<strong>{name}</strong>"
+                    f"<span>{badge}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"Slug: `{slug}` · Port: `{port}`")
+
+            with c2:
+                cc1, cc2, cc3, cc4 = st.columns(4)
+                if cc1.button("Öffnen", key=f"open_{slug}"):
+                    st.session_state["__nav__"] = href
+                    st.markdown(f"[→ öffnen]({href})")
+                if cc2.button("Start", key=f"start_{slug}"):
+                    ok, out = _ctl("start", slug); (st.success if ok else st.error)(out)
+                if cc3.button("Stop", key=f"stop_{slug}"):
+                    ok, out = _ctl("stop", slug); (st.success if ok else st.error)(out)
+                if cc4.button("Restart", key=f"restart_{slug}"):
+                    ok, out = _ctl("restart", slug); (st.success if ok else st.error)(out)
+                # Status einzeln prüfen:
+                st.button("Status", key=f"status_{slug}",
+                          on_click=lambda s=slug: _ctl("status", s))
+
+    st.markdown("---")
+
+    # ---------- Tool hinzufügen ----------
+    st.markdown("### ➕ Tool hinzufügen")
+    has_add = True
+    try:
+        add_tool  # noqa: F401
+    except Exception:
+        has_add = False
+        st.info("add_tool() ist nicht verfügbar – Hinzufügen deaktiviert.")
+
+    if has_add:
+        with st.form("add_tool_form_center", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            name = c1.text_input("Name", placeholder="Mein Tool")
+            slug = c2.text_input("Slug", placeholder="meintool")
+            c3, c4 = st.columns(2)
+            port = c3.number_input("Port", min_value=1, max_value=65535, step=1, value=8507)
+            emoji = c4.text_input("Emoji", placeholder="🧩")
+            health_path = st.text_input("Health-Path (optional)", placeholder="/_stcore/health oder /tools/slug/_stcore/health")
+            submitted = st.form_submit_button("Hinzufügen", type="primary", use_container_width=True)
+
+        if submitted:
+            try:
+                ok, msg = add_tool({
+                    "name": (name or "").strip(),
+                    "slug": (slug or "").strip(),
+                    "port": int(port),
+                    "emoji": (emoji or "").strip(),
+                    "health_path": (health_path or "").strip(),
+                })
+            except Exception as e:
+                ok, msg = False, f"add_tool() Fehler: {e}"
+            (st.success if ok else st.error)(msg)
+            if ok:
+                try:
+                    check_health.clear()
+                except Exception:
+                    pass
+                st.rerun()
+
+    st.markdown("---")
+
+    # ---------- Tool löschen ----------
+    st.markdown("### 🗑️ Tool löschen")
+    has_del = True
+    try:
+        delete_tool  # noqa: F401
+    except Exception:
+        has_del = False
+        st.info("delete_tool() ist nicht verfügbar – Löschen deaktiviert.")
+
+    if has_del:
+        choices = [t.get("slug","") for t in tools if t.get("slug")]
+        colx, coly = st.columns([0.7, 0.3])
+        sel = colx.multiselect("Zu löschende Slugs", choices, default=[])
+        if coly.button("Löschen", type="secondary", disabled=not sel, use_container_width=True):
+            errs = []
+            for s in sel:
+                try:
+                    ok, msg = delete_tool(s)
+                except Exception as e:
+                    ok, msg = False, f"delete_tool() Fehler: {e}"
+                if not ok:
+                    errs.append(f"{s}: {msg}")
+            if errs:
+                st.error("Fehler:\n- " + "\n- ".join(errs))
+            else:
+                st.success("Ausgewählte Tools gelöscht.")
+                try:
+                    check_health.clear()
+                except Exception:
+                    pass
+                st.rerun()
+
+
+# ---- Aufruf (am Ende der App, unterhalb der Kacheln) -----------------------
+try:
+    render_tools_center()
+except Exception as e:
+    import streamlit as st
+    st.info(f"Tools-Zentralsektion konnte nicht gerendert werden: {e}")

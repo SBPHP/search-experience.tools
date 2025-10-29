@@ -1,0 +1,111 @@
+import os
+import subprocess
+import time
+from typing import Dict, Optional
+import streamlit as st
+
+st.set_page_config(page_title="Tools Hub", layout="wide")
+
+st.markdown("""
+<style>
+:root { --gap: 12px; }
+.block { padding: 12px; border: 1px solid #e5e7eb; border-radius: 12px; }
+.kv { display: grid; grid-template-columns: 180px 1fr; gap: 6px 16px; }
+small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: .8; }
+</style>
+""", unsafe_allow_html=True)
+
+BASE_PATH = os.environ.get("HUB_BASE_PATH", "tools")
+SERVICES: Dict[str, Dict] = {
+    "linkchecker": {"title": "LinkChecker", "unit": "linkchecker.service", "port": 8504, "path": "tools/linkchecker"},
+    "metadatacreator": {"title": "MetadataCreator", "unit": "metadatacreator.service", "port": 8505, "path": "tools/metadatacreator"},
+    "redirectmapper": {"title": "RedirectMapper", "unit": "redirectmapper.service", "port": 8506, "path": "tools/redirectmapper"},
+    "contentgapper": {"title": "ContentGapper", "unit": "contentgapper.service", "port": 8507, "path": "tools/contentgapper"},
+}
+
+def run(cmd: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+
+def unit_status(unit: str) -> str:
+    p = run(["systemctl", "is-active", unit])
+    return p.stdout.strip() or p.stderr.strip()
+
+def unit_action(unit: str, action: str) -> tuple[bool, str]:
+    p = run(["systemctl", action, unit])
+    ok = p.returncode == 0
+    msg = (p.stdout or p.stderr).strip() or f"{unit} {action}"
+    return ok, msg
+
+def health_local(port: int, subpath: Optional[str]) -> tuple[bool, str]:
+    path = f"/_stcore/health" if not subpath else f"/{subpath}/_stcore/health"
+    try:
+        p = run(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", f"http://127.0.0.1:{port}{path}"], timeout=5)
+        return (p.stdout.strip() == "200", f"HTTP {p.stdout.strip()}")
+    except Exception as e:
+        return False, f"err: {e}"
+
+def badge(ok: bool) -> str:
+    return "🟢 OK" if ok else "🔴 DOWN"
+
+st.title("Search Experience – Tools Hub")
+st.caption(f"Base path: /{BASE_PATH} · Host: 127.0.0.1")
+
+with st.expander("Quick Actions / System"):
+    cols = st.columns(4)
+    with cols[0]:
+        if st.button("Reload Nginx", use_container_width=True):
+            ok, msg = unit_action("nginx.service", "reload")
+            st.success(msg) if ok else st.error(msg)
+    with cols[1]:
+        if st.button("Test Nginx Config", use_container_width=True):
+            p = run(["nginx", "-t"])
+            st.code((p.stdout + "\n" + p.stderr).strip(), language="bash")
+
+for key, cfg in SERVICES.items():
+    with st.container():
+        st.subheader(cfg["title"])
+        cols = st.columns([1, 1, 1, 2, 2])
+        with cols[0]:
+            status = unit_status(cfg["unit"])
+            st.write("**Status**")
+            st.write(status or "unknown")
+        with cols[1]:
+            ok, msg = health_local(cfg["port"], cfg["path"])
+            st.write("**Health**")
+            st.write(f"{badge(ok)} · {msg}")
+        with cols[2]:
+            st.write("**Actions**")
+            b1 = st.button(f"Start", key=f"{key}_start")
+            b2 = st.button(f"Stop", key=f"{key}_stop")
+            b3 = st.button(f"Restart", key=f"{key}_restart")
+            if b1:
+                ok, msg = unit_action(cfg["unit"], "start")
+                st.toast("Start: " + ("OK" if ok else msg))
+                time.sleep(0.3); st.rerun()
+            if b2:
+                ok, msg = unit_action(cfg["unit"], "stop")
+                st.toast("Stop: " + ("OK" if ok else msg))
+                time.sleep(0.3); st.rerun()
+            if b3:
+                ok, msg = unit_action(cfg["unit"], "restart")
+                st.toast("Restart: " + ("OK" if ok else msg))
+                time.sleep(0.3); st.rerun()
+        with cols[3]:
+            st.markdown(f"**Local**: http://127.0.0.1:{cfg['port']}/{cfg['path']}/  ")
+            st.markdown(f"**Health**: http://127.0.0.1:{cfg['port']}/{cfg['path']}/_stcore/health")
+        with cols[4]:
+            st.markdown(
+                f"""
+<div class="block">
+<div class="kv">
+<div>Unit</div><div><code>{cfg['unit']}</code></div>
+<div>Port</div><div><code>{cfg['port']}</code></div>
+<div>BasePath</div><div><code>/{cfg['path']}</code></div>
+</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+st.divider()
+st.caption("💡 Hinweis: Falls Health-Checks down sind, prüfe baseUrlPath und STREAMLIT_SERVER_FILEWATCHER_TYPE=none.")

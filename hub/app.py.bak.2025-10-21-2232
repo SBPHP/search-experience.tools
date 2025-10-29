@@ -1,0 +1,380 @@
+# Absoluter Pfad zu deinem Control-CLI (falls genutzt)
+CTL_BIN = "/usr/local/bin/streamlit-toolctl"
+
+def _assert_ctl_exists():
+    if not os.path.exists(CTL_BIN):
+        return False, f"{CTL_BIN} nicht gefunden"
+    if not os.access(CTL_BIN, os.X_OK):
+        return False, f"{CTL_BIN} ist nicht ausführbar (chmod +x nötig)"
+    return True, ""
+
+def run_ctl(args: List[str]) -> Tuple[bool, str]:
+    ok, msg = _assert_ctl_exists()
+    if not ok:
+        return False, f"[toolctl] {msg}"
+    cmd = [CTL_BIN] + args
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=25)
+        out = (out or "").strip()
+        return True, out if out else "(kein Output vom Tool)"
+    except subprocess.CalledProcessError as e:
+        body = (e.output or "").strip() or f"Exit {e.returncode}"
+        return False, f"(Fehler) {body}"
+    except PermissionError:
+        return False, "Permission denied beim Ausführen von streamlit-toolctl"
+    except FileNotFoundError:
+        return False, f"{CTL_BIN} nicht gefunden"
+    except Exception as e:
+        return False, f"Unerwarteter Fehler: {e}"
+
+def safe_toast(ok: bool, out: str, action: str, slug: str):
+    msg = (out or "").strip() or f"{action} {slug} " + ("✔️ erfolgreich" if ok else "❌ fehlgeschlagen")
+    st.toast(msg, icon="✅" if ok else "❌")
+
+@st.cache_data(ttl=10, show_spinner=False)
+def check_health(port: int, slug: str, timeout: float = 1.5) -> Tuple[bool, float]:
+    # Wir checken die App am Root; NGINX strippt /tools/<slug>/
+    url = f"http://127.0.0.1:{port}/"
+    t0 = time.perf_counter()
+    try:
+        try:
+            r = requests.head(url, timeout=timeout)
+        except Exception:
+            r = requests.get(url, timeout=timeout)
+        ok = (r.status_code == 200)
+    except Exception:
+        ok = False
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    return ok, latency_ms
+
+def status_badge(is_up: bool, latency_ms: float) -> str:
+    if is_up:
+        color, label = "#22c55e", "UP"
+    else:
+        color, label = "#ef4444", "DOWN"
+    latency = f"{latency_ms:.0f}ms" if latency_ms > 0 else "—"
+    return f"""
+    <span style="display:inline-flex;align-items:center;gap:.35rem;
+        padding:.15rem .5rem;border-radius:999px;background:{color}1A;color:{color};
+        font-weight:600;font-size:.85rem;">● {label} · {latency}</span>
+    """
+
+def tool_card(tool: Dict, base_href: str):
+    slug = tool["slug"]; name = tool["name"]; desc = tool.get("desc","")
+    emoji = tool.get("emoji","🧩"); port = tool["port"]; href = f"{base_href}/{slug}/"
+    up, lat = check_health(port, slug)
+    with st.container(border=True):
+        c1, c2 = st.columns([0.75, 0.25], vertical_alignment="center")
+        with c1:
+            st.markdown(f"### {emoji} [{name}]({href})", unsafe_allow_html=True)
+            st.caption(desc)
+        with c2:
+            st.markdown(status_badge(up, lat), unsafe_allow_html=True)
+        b1, b2, b3, b4 = st.columns(4)
+        if b1.button("Start", key=f"start-{slug}"):
+            ok_, out = run_ctl(["start", slug]); safe_toast(ok_, out, "Start", slug); check_health.clear(); st.rerun()
+        if b2.button("Stop", key=f"stop-{slug}"):
+            ok_, out = run_ctl(["stop", slug]); safe_toast(ok_, out, "Stop", slug); check_health.clear(); st.rerun()
+        if b3.button("Restart", key=f"restart-{slug}"):
+            ok_, out = run_ctl(["restart", slug]); safe_toast(ok_, out, "Restart", slug); check_health.clear(); st.rerun()
+        if b4.button("Status", key=f"status-{slug}"):
+            ok_, out = run_ctl(["status", slug]); st.code(out or "(keine Ausgabe)"); safe_toast(ok_, out, "Status", slug)
+
+# -----------------------------
+# Streamlit Page Setup
+# -----------------------------
+st.set_page_config(page_title="Tools Hub", page_icon="🧰", layout="wide", initial_sidebar_state="expanded")
+st.title("🧰 Search Experience – Tools Hub")
+
+# Login UI
+st.sidebar.markdown("## 🔐 Login")
+# Neuere Auth-Versionen liefern ggf. keine Rückgabe – Status aus Session lesen
+auth.login("sidebar")
+auth_status = st.session_state.get("authentication_status")
+name = st.session_state.get("name")
+username = st.session_state.get("username")
+
+# Auth-Status prüfen & früh beenden
+if auth_status is False:
+    st.sidebar.error("Login fehlgeschlagen.")
+    st.stop()
+elif auth_status is None:
+    st.stop()
+
+# Ab hier: authentifiziert
+user_rec = cfg.get("credentials", {}).get("usernames", {}).get(username, {})
+user_roles = set(user_rec.get("roles", []))
+allowed_list = user_rec.get("allowed_tools", []) or []
+
+# Logout-Button korrekt in der Sidebar
+with st.sidebar:
+    st.write(f"👤 Eingeloggt als: **{name or username}**")
+    auth.logout("Logout", "sidebar", key="logout_sidebar_btn")
+
+# Hinweis beim fehlenden Control-Tool (nur Info – App läuft trotzdem)
+ok_ctl, msg_ctl = _assert_ctl_exists()
+if not ok_ctl:
+    st.info(f"Optionales Control-CLI fehlt/ist nicht ausführbar: {msg_ctl}")
+
+# Health neu prüfen
+with st.sidebar:
+    st.divider()
+    if st.button("🔄 Health neu prüfen"):
+        check_health.clear(); st.rerun()
+
+# CLI Debug (optional)
+with st.sidebar:
+    st.subheader("Tool Control (CLI)")
+    _tools = get_tools()
+    action = st.selectbox("Aktion", ["status", "start", "stop", "restart"], index=0)
+    slug = st.selectbox("Tool", [t["slug"] for t in _tools], index=0)
+    if st.button("Ausführen"):
+        ok_, out = run_ctl([action, slug]); st.code(out or "(keine Ausgabe)")
+        safe_toast(ok_, out, action.capitalize(), slug)
+        if action != "status": check_health.clear(); st.rerun()
+
+# Tools filtern nach Rechten
+def filter_tools(tools_list: List[Dict]) -> List[Dict]:
+    if "*" in allowed_list or "admin" in user_roles:
+        return tools_list
+    keep = set([t.strip() for t in allowed_list])
+    return [t for t in tools_list if t.get("slug") in keep]
+
+st.markdown("## 🚀 Schnellzugriff")
+st.caption("Direktstart der wichtigsten Apps. Status wird regelmäßig aktualisiert.")
+BASE_HREF = "/tools"
+
+flt_tools = filter_tools(get_tools())
+for i in range(0, len(flt_tools), 2):
+    cols = st.columns(2)
+    for j, tool in enumerate(flt_tools[i:i+2]):
+        with cols[j]:
+            tool_card(tool, base_href=BASE_HREF)
+
+st.markdown("---")
+st.markdown("### ℹ️ Hinweise")
+st.markdown(
+    "- Root der Domain zeigt auf den Hub.\n"
+    "- /tools/<slug>/ werden via NGINX auf die lokalen Ports gemappt.\n"
+)
+
+# -----------------------------
+# Admin-Bereich (Benutzer & Tools)
+# -----------------------------
+if "admin" in user_roles:
+    st.markdown("---")
+    st.subheader("👤 Admin · Benutzer & Rechte")
+
+    tab1, tab2, tab3 = st.tabs(["Benutzer", "Passwort setzen", "Tools verwalten"])
+
+    # ----- Benutzer -----
+    with tab1:
+        st.caption("Zulässige Apps pro Benutzer verwalten.")
+        users = list(cfg.get("credentials", {}).get("usernames", {}).keys())
+        sel = st.selectbox("User wählen", users, index=0 if users else None)
+        if sel:
+            u = cfg["credentials"]["usernames"][sel]
+            st.write(f"**Name:** {u.get('name','')} · **Rollen:** {', '.join(u.get('roles',[])) or '—'}")
+            tool_slugs = [t["slug"] for t in get_tools()]
+            current = u.get("allowed_tools", [])
+            star = st.checkbox("Alle Tools erlauben (*)", value="*" in current, key="allow_all")
+            if star:
+                new_allowed = ["*"]
+            else:
+                new_allowed = st.multiselect("Erlaubte Tools", tool_slugs, default=[x for x in current if x in tool_slugs])
+            if st.button("Speichern", type="primary"):
+                u["allowed_tools"] = new_allowed
+                save_users(cfg, USERS_DB_PATH)
+                st.success("Gespeichert.")
+                st.cache_data.clear()
+
+    # ----- Passwort setzen -----
+    with tab2:
+        st.caption("Passwort eines Benutzers setzen/ändern.")
+        users = list(cfg.get("credentials", {}).get("usernames", {}).keys())
+        sel2 = st.selectbox("User", users, key="pw_user")
+        new_pw = st.text_input("Neues Passwort", type="password")
+        if st.button("Passwort aktualisieren"):
+            if not new_pw:
+                st.error("Bitte Passwort eingeben.")
+            else:
+                # Hash via bcrypt (robust für alle Auth-Versionen)
+                import bcrypt
+                hashed = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
+                cfg["credentials"]["usernames"][sel2]["password"] = hashed
+                save_users(cfg, USERS_DB_PATH)
+                st.success("Passwort aktualisiert.")
+
+    # ----- Tools verwalten -----
+    with tab3:
+        st.caption("Apps hinzufügen, löschen, umbenennen, Ports/Emoji/Beschreibung anpassen. Persistiert in tools.json.")
+        tools = list(get_tools())
+
+        # Übersicht & Inline-Edit
+        st.markdown("#### Vorhandene Tools")
+        if tools:
+            # kleine, editierbare Tabelle
+            edited = st.data_editor(
+                tools,
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "slug": st.column_config.TextColumn("Slug", help="Pfad unter /tools/<slug>/"),
+                    "name": st.column_config.TextColumn("Name"),
+                    "desc": st.column_config.TextColumn("Beschreibung"),
+                    "port": st.column_config.NumberColumn("Port", min_value=1, max_value=65535, step=1),
+                    "emoji": st.column_config.TextColumn("Emoji"),
+                },
+                key="tools_editor",
+            )
+            c1, c2, c3, c4 = st.columns([1,1,1,1])
+            with c1:
+                if st.button("💾 Speichern"):
+                    # Validierung: Slugs eindeutig & nicht leer
+                    slugs = [t.get("slug","").strip() for t in edited]
+                    if any(not s for s in slugs) or len(slugs) != len(set(slugs)):
+                        st.error("Jeder Eintrag braucht einen eindeutigen, nicht-leeren Slug.")
+                    else:
+                        set_tools(edited, persist=True)
+                        check_health.clear()
+                        st.success("Tools gespeichert.")
+                        st.rerun()
+            with c2:
+                if st.button("⟲ Neu laden"):
+                    st.session_state.pop("tools_override", None)
+                    st.success("Neu geladen.")
+                    st.rerun()
+            with c3:
+                if st.button("🧪 Status prüfen"):
+                    check_health.clear()
+                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+            with c4:
+                # Export
+                st.download_button(
+                    "⬇️ Export JSON",
+                    data=json.dumps(tools, ensure_ascii=False, indent=2).encode("utf-8"),
+                    file_name="tools.json",
+                    mime="application/json",
+                )
+        else:
+            st.info("Keine Tools definiert.")
+
+        st.markdown("#### Neues Tool hinzufügen")
+        with st.form("add_tool_form", clear_on_submit=True):
+            c1, c2 = st.columns([1,1])
+            with c1:
+                n_slug = st.text_input("Slug (z. B. redirectmapper)")
+                n_name = st.text_input("Name")
+                n_port = st.number_input("Port", min_value=1, max_value=65535, value=8510, step=1)
+            with c2:
+                n_emoji = st.text_input("Emoji", value="🧩")
+                n_desc = st.text_input("Beschreibung", value="")
+            submitted = st.form_submit_button("➕ Hinzufügen")
+            if submitted:
+                if not n_slug.strip() or not n_name.strip():
+                    st.error("Slug und Name sind Pflicht.")
+                elif find_tool(n_slug.strip()):
+                    st.error("Slug existiert bereits.")
+                else:
+                    tools = get_tools() + [{
+                        "slug": n_slug.strip(),
+                        "name": n_name.strip(),
+                        "desc": n_desc.strip(),
+                        "port": int(n_port),
+                        "emoji": n_emoji.strip() or "🧩",
+                    }]
+                    set_tools(tools, persist=True)
+                    st.success(f"Tool **{n_name}** hinzugefügt.")
+                    check_health.clear()
+                    st.rerun()
+
+        st.markdown("#### Aktionen")
+        # Aktionen auf einzelnes Tool
+        act_slug = st.selectbox("Tool auswählen", [t["slug"] for t in get_tools()])
+        a1, a2, a3, a4 = st.columns([1,1,1,1])
+        with a1:
+            if st.button("Start", key="adm_start"):
+                ok,out = run_ctl(["start", act_slug]); safe_toast(ok,out,"Start",act_slug)
+        with a2:
+            if st.button("Stop", key="adm_stop"):
+                ok,out = run_ctl(["stop", act_slug]); safe_toast(ok,out,"Stop",act_slug)
+        with a3:
+            if st.button("Restart", key="adm_restart"):
+                ok,out = run_ctl(["restart", act_slug]); safe_toast(ok,out,"Restart",act_slug)
+        with a4:
+            if st.button("Status", key="adm_status"):
+                ok,out = run_ctl(["status", act_slug]); st.code(out or "(keine Ausgabe)"); safe_toast(ok,out,"Status",act_slug)
+
+        # Entfernen
+        st.markdown("#### Tool löschen")
+        del_slug = st.selectbox("Zu löschendes Tool", [t["slug"] for t in get_tools()], key="del_select")
+        if st.button("🗑️ Löschen", type="secondary"):
+            new_list = [t for t in get_tools() if t["slug"] != del_slug]
+            set_tools(new_list, persist=True)
+            st.success(f"{del_slug} gelöscht.")
+            check_health.clear()
+            st.rerun()
+
+# ============================================
+# 🧩 Auth-Status Handling (Login / Logout)
+# ============================================
+if auth_status is False:
+    st.sidebar.error("Login fehlgeschlagen.")
+    st.stop()
+elif auth_status is None:
+    st.stop()
+else:
+    with st.sidebar:
+        st.write(f"👤 Eingeloggt als: **{name}**")
+        auth.logout("Logout", "sidebar", key="logout_sidebar_btn")
+
+def find_tool(slug: str):
+    """Tool-Record nach slug aus der TOOLS-Liste oder anderen Quellen ermitteln."""
+    try:
+        for t in TOOLS:
+            if t.get("slug") == slug:
+                return t
+    except Exception:
+        pass
+    # Fallback: evtl. dynamische Quelle in st.session_state
+    try:
+        for t in st.session_state.get("tools", []):
+            if t.get("slug") == slug:
+                return t
+    except Exception:
+        pass
+    return {}
+
+
+def _resolve_health_urls(port: int, slug: str) -> list:
+    """Baue die Liste möglicher Health-URLs – inkl. tool-spezifischen Overrides."""
+    urls = []
+    t = find_tool(slug) or {}
+
+    # Harte URL (überschreibt alles)
+    u = (t.get("health_url") or "").strip()
+    if u:
+        urls.append(u if u.startswith("http") else f"http://127.0.0.1:{port}{u}")
+
+    # Relativer Pfad
+    hp = (t.get("health_path") or "").strip()
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+
+    # Defaults (Streamlit)
+    urls.extend([
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ])
+
+    # Dedupe mit Reihenfolge
+    seen = set()
+    uniq = []
+    for x in urls:
+        if x not in seen:
+            uniq.append(x)
+            seen.add(x)
+    return uniq
+

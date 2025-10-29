@@ -1,0 +1,335 @@
+# -*- coding: utf-8 -*-
+import os, subprocess, time
+import streamlit as st
+
+
+def render_sidebar_hardreset():
+    import streamlit as st
+    from time import sleep
+
+    def _safe_clear_health():
+        try:
+            check_health.clear()
+        except Exception:
+            pass
+
+    if False:
+        with st.sidebar:
+            pass
+        # Konto
+        st.markdown("### 👤 Konto")
+        if st.button("Logout", key="logout_btn_fixed", use_container_width=True):
+            try:
+                st.session_state.clear()
+                _safe_clear_health()
+            except Exception:
+                pass
+            st.rerun()
+        st.caption("**Eingeloggt als:** Admin")
+        st.markdown("---")
+
+        # Verwaltung
+        st.markdown("### ⚙️ Verwaltung")
+        if st.button("🔄 Health neu prüfen", use_container_width=True):
+            _safe_clear_health()
+            st.rerun()
+        live = st.toggle("Live-Status (1s)", value=False, help="Aktualisiert die Badges jede Sekunde")
+        st.markdown("---")
+
+        # Tools
+        st.markdown("### 🧰 Tools")
+        tools = []
+        try:
+            tools = get_tools()
+        except Exception:
+            try:
+                tools = TOOLS
+            except Exception:
+                tools = []
+
+        for t in tools:
+            slug = t.get("slug","")
+            name = t.get("name", slug)
+            port = int(t.get("port",0) or 0)
+            emoji = t.get("emoji","")
+            try:
+                up, lat = check_health(port, slug)
+            except Exception:
+                up, lat = (False, 0.0)
+            href = f"/tools/{slug}/" if slug != "hub" else "/tools/"
+            # Badge
+            try:
+                badge_html = status_badge(up, lat)
+            except Exception:
+                label = "UP" if up else "DOWN"
+                badge_html = f"<span style='padding:.1rem .45rem;border-radius:999px;background:rgba(34,197,94,.1);color:#22c55e;font-weight:700;font-size:.78rem;'>● {label}</span>"
+
+            st.markdown(
+                f"""
+<div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-radius:.5rem;">
+  <div><span style="margin-right:.35rem">{emoji}</span>
+       <a href="{href}" style="text-decoration:none;font-weight:600">{name}</a></div>
+  {badge_html}
+</div>""",
+                unsafe_allow_html=True
+            )
+        st.markdown("---")
+
+        # Tool hinzufügen
+        st.markdown("### ➕ Tool hinzufügen")
+        with st.form("add_tool_form", clear_on_submit=True):
+            c1,c2 = st.columns(2)
+            name = c1.text_input("Name", placeholder="Mein Tool")
+            slug = c2.text_input("Slug", placeholder="meintool")
+            c3,c4 = st.columns(2)
+            port = c3.number_input("Port", min_value=1, max_value=65535, step=1, value=8507)
+            emoji = c4.text_input("Emoji", placeholder="🧩")
+            health_path = st.text_input("Health-Path (optional)", placeholder="/tools/slug/_stcore/health")
+            submitted = st.form_submit_button("Hinzufügen", type="primary", use_container_width=True)
+
+        if submitted:
+            entry = {
+                "name": (name or "").strip(),
+                "slug": (slug or "").strip(),
+                "port": int(port),
+                "emoji": (emoji or "").strip(),
+                "health_path": (health_path or "").strip(),
+            }
+            ok = False; msg = ""
+            try:
+                ok, msg = add_tool(entry)
+            except Exception as e:
+                msg = f"Fehler: {e}"
+            (st.success if ok else st.error)(msg)
+            if ok:
+                _safe_clear_health()
+                st.rerun()
+
+        # Auto-Refresh
+        if live:
+            sleep(1)
+            st.rerun()
+
+
+# requests ist optional – Health-Checks laufen auch ohne (dann nur systemd)
+try:
+    import requests
+except Exception:
+    requests = None
+
+# -------- Grundkonfig --------
+st.set_page_config(
+    page_title="Search Experience – Tools Hub",
+    page_icon="🧰",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Tool-Liste (Ports bitte anpassen falls anders)
+TOOLS = [
+    {
+        "name": "RedirectMapper",
+        "slug": "redirectmapper",
+        "emoji": "🔀",
+        "port": 8502,
+        # läuft am Root der App → Standard-Health reicht
+    },
+    {
+        "name": "LinkChecker",
+        "slug": "linkchecker",
+        "emoji": "🔗",
+        "port": 8504,
+    },
+    {
+        "name": "MetadataCreator",
+        "slug": "metadatacreator",
+        "emoji": "✍️",
+        "port": 8505,
+        # eigener Health-Pfad wegen BaseUrlPath
+        "health_path": "/tools/metadatacreator/_stcore/health",
+    },
+    {
+        "name": "ContentGapper",
+        "slug": "contentgapper",
+        "emoji": "📉",
+        "port": 8506,
+    },
+    {
+        "name": "Hub",
+        "slug": "hub",
+        "emoji": "🧰",
+        "port": 8510,
+        "health_path": "/tools/_stcore/health",
+    },
+]
+
+# -------- Utils --------
+def status_badge(up: bool, latency_ms: float) -> str:
+    color = "#22c55e" if up else "#ef4444"
+    label = "UP" if up else "DOWN"
+    lat   = f"{latency_ms:.0f}ms" if latency_ms > 0 else "—"
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:.35rem;'
+        f'padding:.1rem .55rem;border-radius:999px;background:{color}1A;'
+        f'color:{color};font-weight:700;font-size:.78rem;">● {label} · {lat}</span>'
+    )
+
+def run_ctl(action: str, slug: str) -> tuple[bool, str]:
+    """start/stop/restart/status via /usr/local/bin/streamlit-toolctl (optional)."""
+    bin_path = "/usr/local/bin/streamlit-toolctl"
+    if not os.path.exists(bin_path) or not os.access(bin_path, os.X_OK):
+        return False, "toolctl nicht vorhanden (optional)"
+    try:
+        out = subprocess.check_output([bin_path, action, slug], text=True, stderr=subprocess.STDOUT, timeout=8)
+        return True, out.strip()
+    except subprocess.CalledProcessError as e:
+        return False, (e.output or f"Exit {e.returncode}").strip()
+    except Exception as e:
+        return False, str(e)
+
+@st.cache_data(ttl=1, show_spinner=False)
+def check_health(port: int, slug: str, timeout: float = 1.8) -> tuple[bool, float]:
+    """Robuster Health-Check:
+       1) systemd is-active (wenn möglich)
+       2) HTTP-HEAD → HTTP-GET (2xx/3xx = OK), inkl. spezieller health_path.
+    """
+    t0 = time.perf_counter()
+    ok = False
+
+    # 1) systemd
+    try:
+        unit = {
+            "metadatacreator": "se-metadatacreator.service",
+            "redirectmapper":  "se-redirectmapper.service",
+            "linkchecker":     "se-linkchecker.service",
+            "contentgapper":   "se-contentgapper.service",
+            "hub":             "search-experience-hub.service",
+        }.get(slug)
+        if unit and shutil.which("systemctl"):
+            out = subprocess.check_output(["systemctl", "is-active", unit], text=True, timeout=1.2).strip()
+            if out == "active":
+                ok = True
+    except Exception:
+        pass
+
+    # 2) HTTP Health (wenn requests da ist oder systemd nicht already OK)
+    urls = []
+    # tool-spezifisch:
+    tp = next((t for t in TOOLS if t.get("slug")==slug), {})
+    hp = (tp.get("health_path") or "").strip()
+    if hp:
+        urls.append(f"http://127.0.0.1:{port}{hp}")
+    # default-Pfade:
+    urls += [
+        f"http://127.0.0.1:{port}/_stcore/health",
+        f"http://127.0.0.1:{port}/healthz",
+        f"http://127.0.0.1:{port}/",
+    ]
+    seen, uniq = set(), []
+    for u in urls:
+        if u not in seen:
+            uniq.append(u); seen.add(u)
+
+    if not ok and requests is not None:
+        def _probe(url: str) -> int:
+            try:
+                r = requests.head(url, timeout=timeout, allow_redirects=False)
+                if 200 <= r.status_code < 400: return r.status_code
+            except Exception:
+                pass
+            try:
+                r = requests.get(url, timeout=timeout, allow_redirects=False)
+                return r.status_code
+            except Exception:
+                return 0
+        for u in uniq:
+            code = _probe(u)
+            if 200 <= code < 400:
+                ok = True
+                break
+
+    lat = (time.perf_counter() - t0) * 1000.0
+    return ok, lat
+
+# shutil wird nur gebraucht, wenn systemd genutzt werden kann (oben referenziert)
+import shutil  # nach der Funktion importiert ist okay, dank Python-Name Binding beim Call
+
+# -------- Sidebar --------
+with st.sidebar:
+    st.markdown("### ⚙️ Verwaltung")
+    # manueller Health-Refresh
+    if st.button("🔄 Health neu prüfen"):
+        try:
+            check_health.clear()
+        except Exception:
+            pass
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 🧰 Tools")
+    live = st.toggle("Live-Status (1s)", value=False, help="Aktualisiert die Badges jede Sekunde")
+    # Tool-Liste mit Badges
+    for t in TOOLS:
+        slug = t["slug"]; name = t["name"]; port = int(t["port"])
+        up, lat = False, 0.0
+        try:
+            up, lat = check_health(port, slug)
+        except Exception:
+            pass
+        href = f"/tools/{slug}/" if slug!="hub" else "/tools/"
+        st.markdown(
+            f"""<div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-radius:.5rem;">
+                <div><span style="margin-right:.35rem">{t.get('emoji','')}</span>
+                <a href="{href}" style="text-decoration:none;font-weight:600">{name}</a></div>
+                {status_badge(up, lat)}
+            </div>""",
+            unsafe_allow_html=True
+        )
+
+    st.markdown("---")
+    st.caption("👤 Eingeloggt als: Admin")  # Platzhalter – Auth ist bewusst deaktiviert
+
+# -------- Main --------
+st.title("🧰 Search Experience – Tools Hub")
+
+# Karten-Ansicht
+cols = st.columns(2)
+for idx, t in enumerate(TOOLS):
+    with cols[idx % 2]:
+        st.container(border=True)
+        st.markdown(f"#### {t.get('emoji','')} {t['name']}")
+        slug = t["slug"]; port = int(t["port"])
+        up, lat = False, 0.0
+        try:
+            up, lat = check_health(port, slug)
+        except Exception:
+            pass
+        st.markdown(status_badge(up, lat), unsafe_allow_html=True)
+        href = f"/tools/{slug}/" if slug!="hub" else "/tools/"
+        st.link_button("Öffnen", href, use_container_width=True)
+
+        # Steuerung (optional)
+        c1, c2, c3, c4 = st.columns(4)
+        if c1.button("Start", key=f"s_{slug}"):
+            ok, out = run_ctl("start", slug); st.toast(("✅ "+out) if ok else ("❌ "+out))
+            try: check_health.clear()
+            except: pass
+            st.rerun()
+        if c2.button("Stop", key=f"t_{slug}"):
+            ok, out = run_ctl("stop", slug); st.toast(("✅ "+out) if ok else ("❌ "+out))
+            try: check_health.clear()
+            except: pass
+            st.rerun()
+        if c3.button("Restart", key=f"r_{slug}"):
+            ok, out = run_ctl("restart", slug); st.toast(("✅ "+out) if ok else ("❌ "+out))
+            try: check_health.clear()
+            except: pass
+            st.rerun()
+        if c4.button("Status", key=f"st_{slug}"):
+            ok, out = run_ctl("status", slug); st.code(out or "(kein Output)")
+
+# Auto-Refresh (sekündlich), wenn in Sidebar aktiviert
+if live:
+    time.sleep(1)
+    st.rerun()
+
