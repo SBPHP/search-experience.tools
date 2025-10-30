@@ -1,35 +1,171 @@
 # -*- coding: utf-8 -*-
 from typing import List, Tuple, Dict, Optional
-import os, json, time, subprocess
+import os, json, time, subprocess, pathlib
 import streamlit as st
+import hashlib, hmac
 
-# === AUTH_GUARD_FALLBACK_V1 ===
-try:
-    if not _se_is_logged_in():
+# ---------------------------------------
+# User-Loading: secrets.toml / FILE / ENV / Dev
+# ---------------------------------------
+
+SECRET_PATHS = [
+    "/var/www/.streamlit/secrets.toml",
+    "/opt/tools/hub/.streamlit/secrets.toml",
+    # häufig auch im Projektverzeichnis:
+    str(pathlib.Path.cwd() / ".streamlit" / "secrets.toml"),
+]
+
+FILE_USER_PATHS = [
+    "/etc/se-hub/users.json",
+    "/opt/tools/hub/config/users.json",
+    "/var/www/se-hub/users.json",
+]
+
+def _secrets_available() -> bool:
+    for p in SECRET_PATHS:
         try:
-            render_login
+            if os.path.exists(p):
+                return True
         except Exception:
             pass
-        try:
-            render_login()
-        except Exception:
-            st.markdown("### 🔐 Bitte einloggen")
-            st.stop()
-        st.stop()
-except Exception:
-    pass
+    return False
 
-try:
-    import requests
-except Exception:
-    requests = None
+def _read_users_file() -> Dict[str, str]:
+    """
+    Liest ein JSON-File mit Mapping { "user": "sha256:<hexhash>", ... }.
+    """
+    for p in FILE_USER_PATHS:
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+        except Exception:
+            continue
+    return {}
+
+def _load_users() -> Dict[str, str]:
+    """
+    Liefert {username: "sha256:<hexhash>"}.
+    Reihenfolge:
+      1) secrets.toml (nur wenn Datei existiert!)
+      2) FILE_USER_PATHS (JSON)
+      3) ENV SE_USERS_JSON
+      4) ENV SE_DEFAULT_USER + SE_DEFAULT_PASS_SHA256
+      5) DEV-Fallback: admin/admin wenn SE_DEV_FALLBACK=1
+    """
+    # 1) Streamlit secrets – nur, wenn die Datei existiert!
+    if _secrets_available():
+        try:
+            sec = st.secrets.get("users")  # type: ignore[attr-defined]
+            if sec:
+                return {str(k): str(v) for k, v in dict(sec).items()}
+        except Exception:
+            # Falls secrets defekt sind, einfach weiter zu anderen Quellen
+            pass
+
+    # 2) Dateibasierte Userliste
+    file_users = _read_users_file()
+    if file_users:
+        return file_users
+
+    # 3) ENV als JSON
+    env_json = os.environ.get("SE_USERS_JSON")
+    if env_json:
+        try:
+            data = json.loads(env_json)
+            return {str(k): str(v) for k, v in dict(data).items()}
+        except Exception:
+            pass
+
+    # 4) ENV Einzel-User mit Hash
+    u = os.environ.get("SE_DEFAULT_USER")
+    h = os.environ.get("SE_DEFAULT_PASS_SHA256")  # nur Hex, ohne "sha256:"
+    if u and h:
+        return {u: f"sha256:{h}"}
+
+    # 5) DEV-Fallback (nur wenn explizit erlaubt)
+    if os.environ.get("SE_DEV_FALLBACK") == "1":
+        return {"admin": "sha256:" + hashlib.sha256(b"admin").hexdigest()}
+
+    # Nichts konfiguriert
+    return {}
+
+
+# === AUTH_GUARD_V2 ===
+def _se_auth_obj():
+    return (
+        st.session_state.get("authenticator")
+        or st.session_state.get("auth")
+        or st.session_state.get("AUTHENTICATOR")
+    )
+
+def _se_is_logged_in() -> bool:
+    if st.session_state.get("authentication_status") is True:
+        return True
+    if st.session_state.get("authed") is True:
+        return True
+    for k in ("username","user","email","name","display_name","user_name"):
+        v = st.session_state.get(k)
+        if isinstance(v, str) and v.strip() and v.strip() != "-":
+            return True
+    return False
+
+def _se_verify_pw(user: str, pw: str) -> bool:
+    users = _load_users()
+    if not users or not user or user not in users:
+        return False
+    try:
+        algo, hexhash = str(users[user]).split(":", 1)
+    except ValueError:
+        return False
+    if algo.lower() != "sha256":
+        return False
+    calc = hashlib.sha256(pw.encode()).hexdigest()
+    return hmac.compare_digest(calc, hexhash)
+
+def render_login():
+    auth = _se_auth_obj()
+    if auth and hasattr(auth, "login"):
+        # Eure frühere Sidebar-Login-Maske (Authenticator)
+        auth.login("🔐 Anmeldung", "sidebar", key="se_login_form_v2")
+        return
+
+    # Fallback: einfache Sidebar-Login-Maske (wenn kein Authenticator aktiv ist)
+    st.sidebar.markdown("### 🔐 Anmeldung")
+    with st.sidebar.form("se_login_fallback", clear_on_submit=False):
+        u = st.text_input("Benutzername")
+        p = st.text_input("Passwort", type="password")
+        ok = st.form_submit_button("Einloggen")
+    if ok:
+        if _se_verify_pw(u.strip(), p):
+            st.session_state["authed"] = True
+            st.session_state["username"] = u.strip()
+            st.session_state["auth_time"] = int(time.time())
+            st.rerun()
+        else:
+            st.error("Benutzername oder Passwort falsch")
+
+def require_login():
+    if _se_is_logged_in():
+        return
+    render_login()
+    st.stop()
+
+# ---- Guard sehr früh starten ----
+require_login()
+# === /AUTH_GUARD_V2 ===
 
 
 # === SIDEBAR_LOGOUT_WIRE_V2 ===
 try:
     if _se_is_logged_in():
         if st.sidebar.button("Logout", key="logout_btn"):
-            _se_perform_logout()
+            for k in ("authentication_status","authed","username","user","email","name",
+                      "display_name","user_name","roles"):
+                st.session_state.pop(k, None)
+            st.rerun()
     else:
         st.sidebar.caption("🚪 nicht eingeloggt")
 except Exception:
@@ -38,8 +174,7 @@ except Exception:
 
 # --- HIDE_MAIN_LOGOUT ---
 try:
-    _st_hide = st
-    _st_hide.markdown("""
+    st.markdown("""
 <style>
 div.st-key-logout_btn_sidebar { display: none !important; }
 </style>
