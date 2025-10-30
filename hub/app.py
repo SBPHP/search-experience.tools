@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-from typing import List, Tuple, Dict, Optional
-import os, json, time, subprocess, pathlib
+from typing import Dict
+import os, json, time, pathlib, hashlib, hmac
 import streamlit as st
-import hashlib, hmac
+import streamlit.components.v1 as components
 
 # ---------------------------------------
 # User-Loading: secrets.toml / FILE / ENV / Dev
@@ -11,7 +11,6 @@ import hashlib, hmac
 SECRET_PATHS = [
     "/var/www/.streamlit/secrets.toml",
     "/opt/tools/hub/.streamlit/secrets.toml",
-    # häufig auch im Projektverzeichnis:
     str(pathlib.Path.cwd() / ".streamlit" / "secrets.toml"),
 ]
 
@@ -31,9 +30,6 @@ def _secrets_available() -> bool:
     return False
 
 def _read_users_file() -> Dict[str, str]:
-    """
-    Liest ein JSON-File mit Mapping { "user": "sha256:<hexhash>", ... }.
-    """
     for p in FILE_USER_PATHS:
         try:
             if os.path.exists(p):
@@ -46,31 +42,16 @@ def _read_users_file() -> Dict[str, str]:
     return {}
 
 def _load_users() -> Dict[str, str]:
-    """
-    Liefert {username: "sha256:<hexhash>"}.
-    Reihenfolge:
-      1) secrets.toml (nur wenn Datei existiert!)
-      2) FILE_USER_PATHS (JSON)
-      3) ENV SE_USERS_JSON
-      4) ENV SE_DEFAULT_USER + SE_DEFAULT_PASS_SHA256
-      5) DEV-Fallback: admin/admin wenn SE_DEV_FALLBACK=1
-    """
-    # 1) Streamlit secrets – nur, wenn die Datei existiert!
     if _secrets_available():
         try:
             sec = st.secrets.get("users")  # type: ignore[attr-defined]
             if sec:
                 return {str(k): str(v) for k, v in dict(sec).items()}
         except Exception:
-            # Falls secrets defekt sind, einfach weiter zu anderen Quellen
             pass
-
-    # 2) Dateibasierte Userliste
     file_users = _read_users_file()
     if file_users:
         return file_users
-
-    # 3) ENV als JSON
     env_json = os.environ.get("SE_USERS_JSON")
     if env_json:
         try:
@@ -78,22 +59,15 @@ def _load_users() -> Dict[str, str]:
             return {str(k): str(v) for k, v in dict(data).items()}
         except Exception:
             pass
-
-    # 4) ENV Einzel-User mit Hash
     u = os.environ.get("SE_DEFAULT_USER")
-    h = os.environ.get("SE_DEFAULT_PASS_SHA256")  # nur Hex, ohne "sha256:"
+    h = os.environ.get("SE_DEFAULT_PASS_SHA256")
     if u and h:
         return {u: f"sha256:{h}"}
-
-    # 5) DEV-Fallback (nur wenn explizit erlaubt)
     if os.environ.get("SE_DEV_FALLBACK") == "1":
         return {"admin": "sha256:" + hashlib.sha256(b"admin").hexdigest()}
-
-    # Nichts konfiguriert
     return {}
 
-
-# === AUTH_GUARD_V2 ===
+# === AUTH GUARD ===
 def _se_auth_obj():
     return (
         st.session_state.get("authenticator")
@@ -128,11 +102,8 @@ def _se_verify_pw(user: str, pw: str) -> bool:
 def render_login():
     auth = _se_auth_obj()
     if auth and hasattr(auth, "login"):
-        # Eure frühere Sidebar-Login-Maske (Authenticator)
         auth.login("🔐 Anmeldung", "sidebar", key="se_login_form_v2")
         return
-
-    # Fallback: einfache Sidebar-Login-Maske (wenn kein Authenticator aktiv ist)
     st.sidebar.markdown("### 🔐 Anmeldung")
     with st.sidebar.form("se_login_fallback", clear_on_submit=False):
         u = st.text_input("Benutzername")
@@ -153,49 +124,37 @@ def require_login():
     render_login()
     st.stop()
 
-# ---- Guard sehr früh starten ----
-require_login()
-# === /AUTH_GUARD_V2 ===
+st.set_page_config(page_title="Tools Hub", page_icon="🧰", layout="wide", initial_sidebar_state="expanded")
 
-
-# === SIDEBAR_LOGOUT_WIRE_V2 ===
-try:
-    if _se_is_logged_in():
-        if st.sidebar.button("Logout", key="logout_btn"):
-            for k in ("authentication_status","authed","username","user","email","name",
-                      "display_name","user_name","roles"):
-                st.session_state.pop(k, None)
-            st.rerun()
-    else:
-        st.sidebar.caption("🚪 nicht eingeloggt")
-except Exception:
-    pass
-
-
-# --- HIDE_MAIN_LOGOUT ---
-try:
-    st.markdown("""
+# === CSS & JS: nur den FALschen Logout (Fallback) entsorgen ===
+st.markdown("""
 <style>
-div.st-key-logout_btn_sidebar { display: none !important; }
+.st-key-sidebar_logout_btn_v2_fallback { display:none !important; }
 </style>
 """, unsafe_allow_html=True)
-except Exception:
-    pass
 
+components.html("""
+<script>
+(function(){
+  const kill = () => {
+    document.querySelectorAll('.st-key-sidebar_logout_btn_v2_fallback').forEach(n => n.remove());
+  };
+  kill();
+  const mo = new MutationObserver(kill);
+  mo.observe(document.documentElement,{subtree:true,childList:true});
+})();
+</script>
+""", height=0)
 
-# === SIDEBAR_LOGOUT_V2 ===
-import os as _os
+require_login()
 
 def _extract_name(v):
-    if not v:
-        return ""
-    if isinstance(v, str):
-        return v.strip()
+    if not v: return ""
+    if isinstance(v, str): return v.strip()
     if isinstance(v, dict):
         for k in ("display_name","name","username","user","email"):
             x = v.get(k)
-            if isinstance(x, str) and x.strip():
-                return x.strip()
+            if isinstance(x, str) and x.strip(): return x.strip()
     return ""
 
 def _current_user_name():
@@ -205,48 +164,20 @@ def _current_user_name():
     for k in ("profile","account","user_info"):
         n = _extract_name(st.session_state.get(k))
         if n: return n
-    _auth = (st.session_state.get("authenticator")
-             or st.session_state.get("auth")
-             or st.session_state.get("AUTHENTICATOR"))
-    try:
-        if _auth:
-            for attr in ("display_name","user_name","name","username","user","email"):
-                if hasattr(_auth, attr):
-                    n = _extract_name(getattr(_auth, attr))
-                    if n: return n
-    except Exception:
-        pass
+    _auth = _se_auth_obj()
+    if _auth:
+        for attr in ("display_name","user_name","name","username","user","email"):
+            if hasattr(_auth, attr):
+                n = _extract_name(getattr(_auth, attr))
+                if n: return n
     return ""
 
 with st.sidebar:
-    if _os.environ.get("SE_DEBUG_AUTH") == "1":
-        st.caption("🔧 Auth-Debug aktiv")
-        try:
-            st.write({k: st.session_state.get(k) for k in sorted(st.session_state.keys())})
-        except Exception:
-            st.write(list(st.session_state.keys()))
-
-    _auth = (st.session_state.get("authenticator")
-             or st.session_state.get("auth")
-             or st.session_state.get("AUTHENTICATOR"))
-
-    used_native = False
-    try:
-        if _auth and hasattr(_auth, "logout"):
-            _auth.logout("🚪 Logout", "sidebar", key="sidebar_logout_btn_v2_native")
-            used_native = True
-    except Exception:
-        used_native = False
-
-    if not used_native:
-        if st.button("🚪 Logout", key="sidebar_logout_btn_v2_fallback", use_container_width=True):
-            try:
-                if _auth and getattr(_auth, "cookie_manager", None):
-                    cname = getattr(_auth, "cookie_name", None) or getattr(_auth, "_cookie_name", None)
-                    if cname:
-                        _auth.cookie_manager.delete(cname)
-            except Exception:
-                pass
+    _auth = _se_auth_obj()
+    if _auth and hasattr(_auth, "logout"):
+        _auth.logout("🚪 Logout", "sidebar", key="sidebar_logout_btn_v2_native")
+    elif os.environ.get("SE_ENABLE_FALLBACK_LOGOUT") == "1":
+        if st.button("🚪 Logout (Fallback)", key="manual_logout_btn", use_container_width=True):
             for k in ("authentication_status","authed","username","user","email","name",
                       "display_name","user_name","roles"):
                 st.session_state.pop(k, None)
@@ -256,30 +187,10 @@ with st.sidebar:
                 pass
             st.rerun()
 
-    _nm = _current_user_name()
-    st.caption(f"👤 Eingeloggt als: {_nm or '–'}")
-
-# === /SIDEBAR_LOGOUT_V2 ===
-
-
-if "live_status_on" not in st.session_state: st.session_state["live_status_on"] = False
-live = st.session_state["live_status_on"]
-
-def filter_tools(tools_list):
-    roles = st.session_state.get("user_roles") or set()
-    allowed = st.session_state.get("allowed_tools")
-    if isinstance(roles, (set, list)) and "admin" in roles:
-        return tools_list
-    if allowed == "*" or (isinstance(allowed, list) and "*" in allowed):
-        return tools_list
-    if not allowed:
-        return tools_list
-    keep = set(allowed if isinstance(allowed, list) else [allowed])
-    return [t for t in tools_list if t.get("slug") in keep]
-
+    st.caption(f"👤 Eingeloggt als: {_current_user_name() or '–'}")
 
 def check_health(port: int, slug: str, timeout: float = 2.0):
-    import time as _t, subprocess, shutil
+    import time as _t, subprocess, shutil, requests
     start = _t.perf_counter()
     ok_sys = False
     try:
@@ -297,13 +208,12 @@ def check_health(port: int, slug: str, timeout: float = 2.0):
 
     ok_http = False
     try:
-        import requests
         urls = [
             f"http://127.0.0.1:{port}/_stcore/health",
             f"http://127.0.0.1:{port}/healthz",
             f"http://127.0.0.1:{port}/",
         ]
-
+        import requests
         def _probe(url: str) -> int:
             try:
                 r = requests.head(url, timeout=timeout, allow_redirects=False)
@@ -316,7 +226,6 @@ def check_health(port: int, slug: str, timeout: float = 2.0):
                 return r.status_code
             except Exception:
                 return 0
-
         for url in urls:
             code = _probe(url)
             if 200 <= code < 400:
@@ -324,11 +233,9 @@ def check_health(port: int, slug: str, timeout: float = 2.0):
                 break
     except Exception:
         ok_http = False
-
     ok = ok_sys or ok_http
     latency_ms = (_t.perf_counter() - start) * 1000.0
     return ok, latency_ms
-
 
 def status_badge(is_up: bool, latency_ms: float) -> str:
     if is_up:
@@ -354,14 +261,8 @@ def tool_card(tool: Dict, base_href: str):
         with c2:
             st.markdown(status_badge(up, lat), unsafe_allow_html=True)
 
-
-# -----------------------------
-# Streamlit Page Setup
-# -----------------------------
-st.set_page_config(page_title="Tools Hub", page_icon="🧰", layout="wide", initial_sidebar_state="expanded")
 st.title("🧰 Search Experience – Tools Hub")
 
-# --- Sidebar: Tools Übersicht ---
 with st.sidebar:
     st.header("🧰 Tools")
     TOOLS = [
@@ -370,38 +271,29 @@ with st.sidebar:
         {"slug": "metadatacreator", "name": "MetadataCreator", "port": 8505, "emoji": "✍️"},
         {"slug": "contentgapper", "name": "ContentGapper", "port": 8506, "emoji": "🎯"},
     ]
-
     for t in TOOLS:
-        slug = t["slug"]; name = t["name"]; emoji = t["emoji"]
-        port = t["port"]
+        slug, name, emoji, port = t["slug"], t["name"], t["emoji"], t["port"]
         ok, lat = check_health(port, slug)
         color = "#22c55e" if ok else "#ef4444"
         label = "UP" if ok else "DOWN"
         href = f"/{slug}/"
-
         st.markdown(f"""
-<div style="display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-radius:.5rem;">
+<div style="display:flex;justify-content:space-between;align-items:center;
+padding:.35rem .5rem;border-radius:.5rem;">
   <div style="display:flex;align-items:center;gap:.35rem;">
     <span style="font-size:1rem;">{emoji}</span>
     <a href="{href}" style="text-decoration:none;font-weight:600;">{name}</a>
   </div>
-  <span style="display:inline-flex;align-items:center;gap:.35rem;padding:.1rem .45rem;border-radius:999px;background:{color}1A;color:{color};font-weight:700;font-size:.78rem;">● {label}</span>
+  <span style="display:inline-flex;align-items:center;gap:.35rem;
+  padding:.1rem .45rem;border-radius:999px;background:{color}1A;
+  color:{color};font-weight:700;font-size:.78rem;">● {label}</span>
 </div>
 """, unsafe_allow_html=True)
 
-# --- Main Grid ---
 BASE_HREF = ""
-
 flt_tools = TOOLS
 for i in range(0, len(flt_tools), 2):
     cols = st.columns(2)
     for j, tool in enumerate(flt_tools[i:i+2]):
         with cols[j]:
             tool_card(tool, base_href=BASE_HREF)
-
-st.markdown("---")
-st.markdown("### ℹ️ Hinweise")
-st.markdown(
-    "- Root der Domain zeigt auf den Hub.\n"
-    "- Die Tools liegen jetzt direkt unter `/<slug>/` statt `/tools/<slug>/`.\n"
-)
