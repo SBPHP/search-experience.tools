@@ -1,0 +1,18 @@
+*** app.py.orig
+--- app.py
+***************
+***  ... (Kontext) ...
+---  ... (Kontext) ...
+***************
+*** BASE_HREF = "/tools"
+--- BASE_HREF = ""
+***************
+***         _href  = f"/tools/{slug}/"
+---         _href  = f"/{slug}/"
+***************
+*** def tool_card(tool: Dict, base_href: str):
+***     slug = tool["slug"]; name = tool["name"]; desc = tool.get("desc","")
+***     emoji = tool.get("emoji","🧩"); port = tool["port"]; href = f"{base_href}/{slug}/"
+--- def tool_card(tool: Dict, base_href: str):
+---     slug = tool["slug"]; name = tool["name"]; desc = tool.get("desc","")
+---     emoji = tool.get("emoji","🧩"); port = tool["port"]; href = f"/{slug}/"
