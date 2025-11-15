@@ -107,8 +107,17 @@ def initsessionstate():
 
 
 # =============================================================================
-#  Datenbank- & Tracking-Funktionen
+#  Hilfsfunktionen für Pfade & Files
 # =============================================================================
+def sanitize_for_filename(value: str) -> str:
+    """
+    Ersetzt alles, was in Filenamen stören könnte, durch Unterstriche.
+    """
+    if not value:
+        return ""
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(value))
+
+
 def get_db_path() -> str:
     """
     Pfad zur SQLite-DB im .streamlit/database-Ordner.
@@ -118,6 +127,30 @@ def get_db_path() -> str:
     return os.path.join(db_dir, "tasks.db")
 
 
+def setup_results_folder() -> str:
+    """
+    Legt einen .streamlit/results-Ordner an.
+    """
+    results_dir = os.path.join(PARENT_DIR, ".streamlit", "results")
+    os.makedirs(results_dir, exist_ok=True)
+    return results_dir
+
+
+def get_results_filepath(username: str, task_id: str) -> str:
+    """
+    Liefert den Pfad zur Ergebnis-CSV eines Tasks.
+    Struktur: .streamlit/results/<username_sanitized>/<task_id_sanitized>_results.csv
+    """
+    results_dir = setup_results_folder()
+    user_dir = os.path.join(results_dir, sanitize_for_filename(username or "unknown"))
+    os.makedirs(user_dir, exist_ok=True)
+    filename = f"{sanitize_for_filename(task_id)}_results.csv"
+    return os.path.join(user_dir, filename)
+
+
+# =============================================================================
+#  Datenbank- & Tracking-Funktionen
+# =============================================================================
 def _ensure_task_table_columns(c: sqlite3.Cursor):
     """
     Stellt sicher, dass alle benötigten Spalten existieren.
@@ -125,23 +158,29 @@ def _ensure_task_table_columns(c: sqlite3.Cursor):
     """
     # task_type nachziehen, falls alte DB existiert
     try:
-        c.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'rankings_and_search_volume'")
+        c.execute(
+            "ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'rankings_and_search_volume'"
+        )
     except sqlite3.OperationalError:
-        # Spalte existiert bereits -> ignorieren
-        pass
+        pass  # Spalte existiert bereits
 
     # settings_json für Search-Settings nachziehen
     try:
         c.execute("ALTER TABLE tasks ADD COLUMN settings_json TEXT")
     except sqlite3.OperationalError:
-        # Spalte existiert bereits -> ignorieren
-        pass
+        pass  # Spalte existiert bereits
+
+    # num_keywords für Statistiken nachziehen
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN num_keywords INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Spalte existiert bereits
 
 
 def setup_database():
     """
     Legt eine tasks-Tabelle an, falls noch nicht vorhanden,
-    und sorgt für minimale Migration (task_type / settings_json).
+    und sorgt für minimale Migration (task_type / settings_json / num_keywords).
     """
     try:
         db_path = get_db_path()
@@ -163,7 +202,8 @@ def setup_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'pending',
                 task_type TEXT DEFAULT 'rankings_and_search_volume',
-                settings_json TEXT
+                settings_json TEXT,
+                num_keywords INTEGER DEFAULT 0
             )
             """
         )
@@ -210,10 +250,11 @@ def save_task(
     domain: str,
     raw_keywords: str,
     task_type: str,
+    num_keywords: int,
     settings_json: Optional[str] = None,
 ) -> bool:
     """
-    Speichert einen Task-Eintrag inkl. task_type & settings_json.
+    Speichert einen Task-Eintrag inkl. task_type, num_keywords & settings_json.
     (Später hängen wir die komplette DataForSEO-Logik daran.)
     """
     conn = get_db_connection()
@@ -227,10 +268,19 @@ def save_task(
 
         c.execute(
             """
-            INSERT INTO tasks (username, task_id, domain, raw_keywords, status, task_type, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (username, task_id, domain, raw_keywords, status, task_type, settings_json, num_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, task_id, domain, raw_keywords, "pending", task_type, settings_json),
+            (
+                username,
+                task_id,
+                domain,
+                raw_keywords,
+                "pending",
+                task_type,
+                settings_json,
+                int(num_keywords or 0),
+            ),
         )
         conn.commit()
         return True
@@ -254,7 +304,7 @@ def get_user_tasks(username: str):
 
         c.execute(
             """
-            SELECT id, task_id, domain, raw_keywords, created_at, status, task_type, settings_json
+            SELECT id, task_id, domain, raw_keywords, created_at, status, task_type, settings_json, num_keywords
             FROM tasks
             WHERE username = ?
             ORDER BY created_at DESC
@@ -273,6 +323,7 @@ def get_user_tasks(username: str):
                 "status": row[5],
                 "task_type": row[6] if len(row) > 6 and row[6] else "rankings_and_search_volume",
                 "settings_json": row[7] if len(row) > 7 else None,
+                "num_keywords": row[8] if len(row) > 8 and row[8] is not None else 0,
             }
             tasks.append(task)
         return tasks
@@ -300,6 +351,51 @@ def delete_task(task_id: str) -> bool:
         return False
     finally:
         conn.close()
+
+
+def update_task_status(task_id: str, new_status: str) -> bool:
+    """
+    Aktualisiert den Status eines Tasks (pending / running / done / error / ...).
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE tasks SET status = ? WHERE task_id = ?", (new_status, task_id))
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        st.error(f"Error updating task status: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def save_task_results(username: str, task_id: str, df: pd.DataFrame) -> bool:
+    """
+    Speichert Ergebnisse eines Tasks als CSV im .streamlit/results-Ordner.
+    """
+    try:
+        path = get_results_filepath(username, task_id)
+        df.to_csv(path, index=False)
+        return True
+    except Exception as e:
+        st.error(f"Error saving task results: {e}")
+        return False
+
+
+def load_task_results(username: str, task_id: str) -> Optional[pd.DataFrame]:
+    """
+    Lädt Ergebnis-CSV eines Tasks, falls vorhanden.
+    """
+    try:
+        path = get_results_filepath(username, task_id)
+        if not os.path.exists(path):
+            return None
+        return pd.read_csv(path)
+    except Exception:
+        return None
 
 
 def setup_tracking_folder():
@@ -364,6 +460,14 @@ def main():
         "Keyword Research & Analysis",
         "Erfassung der Keywords und Anlage der Tasks.",
     )
+
+    # Sidebar: User + Logout
+    with st.sidebar:
+        st.markdown("### User")
+        st.write(NAME or USERNAME or "Unknown user")
+        if st.button("Logout"):
+            logout()
+            st.stop()
 
     # README anzeigen (falls vorhanden)
     with st.expander("Before using this app"):
@@ -511,6 +615,8 @@ def main():
             }
             settings_json = json.dumps(settings, ensure_ascii=False)
 
+            num_keywords = len(keywords_df)
+
             if st.button("Create task", type="primary"):
                 raw_keywords_json = keywords_df.to_json(orient="records", force_ascii=False)
                 task_id = generate_task_id(domain or "no-domain")
@@ -520,12 +626,13 @@ def main():
                     domain or "",
                     raw_keywords_json,
                     task_type,
+                    num_keywords,
                     settings_json=settings_json,
                 )
                 if ok:
                     st.success(
                         f"Task '{task_id}' wurde in der DB angelegt "
-                        f"(Status: pending, Type: {task_type})."
+                        f"(Status: pending, Type: {task_type}, Keywords: {num_keywords})."
                     )
                 else:
                     st.error("Task konnte nicht gespeichert werden.")
@@ -539,90 +646,234 @@ def main():
         st.subheader("View Tasks")
 
         tasks = get_user_tasks(USERNAME or "unknown")
-        if not tasks:
-            st.info("Keine Tasks gefunden. Lege im Tab „Create Task“ einen Task an.")
-        else:
-            # Übersichtstabelle oben
-            overview_rows = []
+
+        # Kleine Statistik oben
+        if tasks:
+            total_tasks = len(tasks)
+            status_counts = {}
+            total_keywords = 0
             for t in tasks:
-                settings = parse_settings(t.get("settings_json"))
-                overview_rows.append(
-                    {
-                        "Created": t["created_at"],
-                        "Task ID": t["task_id"],
-                        "Domain": t["domain"],
-                        "Status": t["status"],
-                        "Task type": t.get("task_type", "rankings_and_search_volume"),
-                        "Search engine": settings.get("search_engine", ""),
-                        "Device": settings.get("device", ""),
-                    }
-                )
-            overview_df = pd.DataFrame(overview_rows)
-            st.dataframe(overview_df)
+                status_counts[t["status"]] = status_counts.get(t["status"], 0) + 1
+                try:
+                    total_keywords += int(t.get("num_keywords", 0) or 0)
+                except Exception:
+                    pass
 
-            # Detail-Expander
-            for task in tasks:
-                settings = parse_settings(task.get("settings_json"))
+            st.markdown(
+                f"**Total tasks:** {total_tasks} "
+                f"| **Total keywords:** {total_keywords} "
+                f"| pending: {status_counts.get('pending', 0)} "
+                f"| running: {status_counts.get('running', 0)} "
+                f"| done: {status_counts.get('done', 0)} "
+                f"| error: {status_counts.get('error', 0)}"
+            )
+        else:
+            st.info("Keine Tasks gefunden. Lege im Tab „Create Task“ einen Task an.")
+            return
 
-                label = (
-                    f"{task['created_at']} | {task['task_id']} | "
-                    f"{task.get('task_type', 'rankings_and_search_volume')} | {task['status']}"
+        # Optionale Filter oben
+        with st.expander("Filter options"):
+            status_filter = st.multiselect(
+                "Filter by status",
+                options=["pending", "running", "done", "error"],
+                default=[],
+                help="If empty, all statuses are shown.",
+                key="status_filter_multiselect",
+            )
+
+        filtered_tasks = []
+        for t in tasks:
+            if status_filter and t["status"] not in status_filter:
+                continue
+            filtered_tasks.append(t)
+
+        if not filtered_tasks:
+            st.info("Keine Tasks entsprechend dem Filter gefunden.")
+            return
+
+        # Übersichtstabelle oben
+        overview_rows = []
+        for t in filtered_tasks:
+            settings = parse_settings(t.get("settings_json"))
+            overview_rows.append(
+                {
+                    "Created": t["created_at"],
+                    "Task ID": t["task_id"],
+                    "Domain": t["domain"],
+                    "Status": t["status"],
+                    "Task type": t.get("task_type", "rankings_and_search_volume"),
+                    "Keywords": t.get("num_keywords", 0),
+                    "Search engine": settings.get("search_engine", ""),
+                    "Device": settings.get("device", ""),
+                }
+            )
+        overview_df = pd.DataFrame(overview_rows)
+        st.dataframe(overview_df)
+
+        # Detail-Expander
+        for task in filtered_tasks:
+            settings = parse_settings(task.get("settings_json"))
+
+            label = (
+                f"{task['created_at']} | {task['task_id']} | "
+                f"{task.get('task_type', 'rankings_and_search_volume')} | {task['status']}"
+            )
+            with st.expander(label):
+                st.write(f"**Domain:** {task['domain'] or '-'}")
+                st.write(f"**Created:** {task['created_at']}")
+                st.write(f"**Status:** {task['status']}")
+                st.write(
+                    f"**Task type:** {task.get('task_type', 'rankings_and_search_volume')}"
                 )
-                with st.expander(label):
-                    st.write(f"**Domain:** {task['domain'] or '-'}")
-                    st.write(f"**Created:** {task['created_at']}")
-                    st.write(f"**Status:** {task['status']}")
+                st.write(f"**Keywords in task:** {task.get('num_keywords', 0)}")
+
+                # Status manuell anpassen (hilfreich solange noch keine echte Queue dran hängt)
+                new_status = st.selectbox(
+                    "Update status",
+                    options=["pending", "running", "done", "error"],
+                    index=["pending", "running", "done", "error"].index(task["status"])
+                    if task["status"] in ["pending", "running", "done", "error"]
+                    else 0,
+                    key=f"status_select_{task['task_id']}",
+                )
+                if new_status != task["status"]:
+                    if st.button("Save status", key=f"save_status_{task['task_id']}"):
+                        if update_task_status(task["task_id"], new_status):
+                            st.success("Status updated.")
+                            st.experimental_rerun()
+
+                st.markdown("#### Search settings")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write(f"- **Search engine:** {settings.get('search_engine', '-')}")
+                    st.write(f"- **Device:** {settings.get('device', '-')}")
+                with col_b:
+                    st.write(f"- **Location:** {settings.get('location_name', '-')}")
+                    st.write(f"- **Language:** {settings.get('language_code', '-')}")
                     st.write(
-                        f"**Task type:** {task.get('task_type', 'rankings_and_search_volume')}"
+                        f"- **Results per keyword:** "
+                        f"{settings.get('results_per_keyword', '-')}"
                     )
 
-                    st.markdown("#### Search settings")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.write(f"- **Search engine:** {settings.get('search_engine', '-')}")
-                        st.write(f"- **Device:** {settings.get('device', '-')}")
-                    with col_b:
-                        st.write(f"- **Location:** {settings.get('location_name', '-')}")
-                        st.write(f"- **Language:** {settings.get('language_code', '-')}")
-                        st.write(
-                            f"- **Results per keyword:** "
-                            f"{settings.get('results_per_keyword', '-')}"
-                        )
+                st.markdown("#### Keywords (preview)")
+                # Keywords nur als Preview
+                try:
+                    kw_list = json.loads(task["raw_keywords"])
+                    kw_df = pd.DataFrame(kw_list)
+                    # Bei älteren Saves evtl. ohne Spaltennamen
+                    if kw_df.columns.tolist() == [0]:
+                        kw_df.columns = ["Keyword"]
+                    st.write("**First 50 keywords:**")
+                    st.dataframe(kw_df.head(50))
+                except Exception:
+                    st.write("Raw keywords:", task["raw_keywords"][:500])
 
-                    st.markdown("#### Keywords (preview)")
-                    # Keywords nur als Preview
+                col_del, col_download = st.columns([1, 1])
+
+                # Delete
+                with col_del:
+                    if st.button("🗑️ Delete task", key=f"delete_{task['task_id']}"):
+                        if delete_task(task["task_id"]):
+                            st.success("Task deleted.")
+                            st.experimental_rerun()
+
+                # Download Keywords als CSV
+                with col_download:
                     try:
                         kw_list = json.loads(task["raw_keywords"])
                         kw_df = pd.DataFrame(kw_list)
-                        st.write("**First 50 keywords:**")
-                        st.dataframe(kw_df.head(50))
+                        if kw_df.columns.tolist() == [0]:
+                            kw_df.columns = ["Keyword"]
+                        csv_bytes_kw = kw_df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "⬇️ Download keywords (CSV)",
+                            data=csv_bytes_kw,
+                            file_name=f"{task['task_id']}_keywords.csv",
+                            mime="text/csv",
+                            key=f"dl_kw_{task['task_id']}",
+                        )
                     except Exception:
-                        st.write("Raw keywords:", task["raw_keywords"][:500])
+                        st.write("Keyword download not available (invalid keyword payload).")
 
-                    col_del, col_download = st.columns([1, 1])
+                st.markdown("---")
+                st.markdown("#### SERP results (placeholder)")
 
-                    # Delete
-                    with col_del:
-                        if st.button("🗑️ Delete task", key=f"delete_{task['task_id']}"):
-                            if delete_task(task["task_id"]):
-                                st.success("Task deleted.")
-                                st.experimental_rerun()
+                # Ergebnis laden, falls vorhanden
+                results_df = load_task_results(USERNAME or "unknown", task["task_id"])
 
-                    # Download als CSV
-                    with col_download:
+                if results_df is not None and not results_df.empty:
+                    st.info(
+                        "Es wurden bereits Ergebnisse für diesen Task gespeichert "
+                        "(aktuell noch als Placeholder-Logik)."
+                    )
+                    st.write("**First 50 results:**")
+                    st.dataframe(results_df.head(50))
+
+                    # Download Results
+                    csv_bytes_res = results_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "⬇️ Download results (CSV)",
+                        data=csv_bytes_res,
+                        file_name=f"{task['task_id']}_results.csv",
+                        mime="text/csv",
+                        key=f"dl_res_{task['task_id']}",
+                    )
+                else:
+                    st.info(
+                        "Für diesen Task liegen noch keine gespeicherten Ergebnisse vor. "
+                        "Als nächsten Schritt haben wir eine Placeholder-Verarbeitung eingebaut, "
+                        "bis die echte Logik aus der Hauptdatei wieder dranhängt."
+                    )
+                    if st.button(
+                        "▶️ Simulate processing (create placeholder results)",
+                        key=f"simulate_{task['task_id']}",
+                    ):
                         try:
                             kw_list = json.loads(task["raw_keywords"])
                             kw_df = pd.DataFrame(kw_list)
-                            csv_bytes = kw_df.to_csv(index=False).encode("utf-8")
-                            st.download_button(
-                                "⬇️ Download keywords (CSV)",
-                                data=csv_bytes,
-                                file_name=f"{task['task_id']}_keywords.csv",
-                                mime="text/csv",
-                                key=f"dl_{task['task_id']}",
-                            )
-                        except Exception:
-                            st.write("Download not available (invalid keyword payload).")
+                            if kw_df.columns.tolist() == [0]:
+                                kw_df.columns = ["Keyword"]
+
+                            # Placeholder-Resultate: pro Keyword eine Zeile
+                            rows = []
+                            se = settings.get("search_engine", "google.de")
+                            device = settings.get("device", "desktop")
+                            loc = settings.get("location_name", "Germany")
+                            lang = settings.get("language_code", "de")
+                            depth = settings.get("results_per_keyword", 20)
+
+                            for kw in kw_df["Keyword"].astype(str).tolist():
+                                rows.append(
+                                    {
+                                        "Keyword": kw,
+                                        "Search engine": se,
+                                        "Device": device,
+                                        "Location": loc,
+                                        "Language": lang,
+                                        "Planned depth": depth,
+                                        "Position": 1,
+                                        "URL": (task["domain"] or "").strip() or "n/a",
+                                        "Created at": datetime.now().strftime(
+                                            "%Y-%m-%d %H:%M:%S"
+                                        ),
+                                        "Note": "Placeholder result – replace with real SERP data later.",
+                                    }
+                                )
+
+                            res_df = pd.DataFrame(rows)
+                            if save_task_results(
+                                USERNAME or "unknown", task["task_id"], res_df
+                            ):
+                                update_task_status(task["task_id"], "done")
+                                st.success(
+                                    "Placeholder-Ergebnisse wurden erstellt und gespeichert. "
+                                    "Später wird hier die echte Logik aus der Hauptdatei laufen."
+                                )
+                                st.experimental_rerun()
+                            else:
+                                st.error("Placeholder-Ergebnisse konnten nicht gespeichert werden.")
+                        except Exception as e:
+                            st.error(f"Error while simulating results: {e}")
 
 
 # =============================================================================
