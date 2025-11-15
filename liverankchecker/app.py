@@ -2442,12 +2442,23 @@ if authentication_status:
 
             return all_task_ids, all_errors
 
-    def init_session_state():
-        """
-        Initializes or updates the Streamlit session state variables.
-        """
-        if 'confirmed_preview' not in st.session_state:
-            st.session_state.confirmed_preview = False
+# Session-State einmalig initialisieren
+def init_session_state():
+    # Wenn du hier schon Code hast, lass deinen drin und ergänze nur die "initialized"-Flag
+    if st.session_state.get("_initialized", False):
+        return
+
+    st.session_state["_initialized"] = True
+
+    # Hier kannst du Standardwerte setzen, wenn du magst:
+    # st.session_state.setdefault("api_key", "")
+    # st.session_state.setdefault("project_id", None)
+    # usw.
+
+
+# Alias, damit alter Code mit initsessionstate() weiter funktioniert
+def initsessionstate():
+    return init_session_state()
 
     def delete_task(task_id):
         """Delete a task from the database"""
@@ -2947,7 +2958,7 @@ if authentication_status:
         with st.expander("Before using this app"):
             st.markdown(read_markdown_file(markdown_file_path))
 
-        init_session_state()
+        initsessionstate()
 
         # Initialize database
         db_path = setup_database()
@@ -3650,18 +3661,13 @@ def apply_claneo_branding(title=None, subtitle=None, **kwargs):
 
 def run_authenticated_main():
     """Main function for authenticated users"""
+    # Hier wird die „große“ main() genutzt, die weiter oben im if authentication_status:
+    # definiert ist (mit Tabs, Tasks etc.)
     main()
-
-def main():
-    apply_claneo_branding("Keyword Analyse", "Tools für Suchvolumen & Rankings")
-    st.title("🔑 Get Keyword Data")
-    # Vor dem Start der App alle SessionState-Werte initialisieren
-    initsessionstate()
-    # Keine Endlosschleife!
-    # App-Logik ohne while- oder for-Endlosschleifen,
-    # Alle API-Aufrufe und Background-Tasks mit Timeout und max_retries ausstatten
-    # Beispiel: for attempt in range(max_retries): ... break, falls erfolgreich
 
 if __name__ == "__main__":
-    main()
-
+    if authentication_status:
+        run_authenticated_main()
+    else:
+        # Optional etwas Nettes anzeigen, wenn jemand nicht eingeloggt ist
+        apply_claneo_branding("Keyword Analyse", "Bitte logge dich ein, um das Keyword-Tool zu nutzen.")
