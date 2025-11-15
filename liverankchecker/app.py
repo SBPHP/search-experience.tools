@@ -424,6 +424,62 @@ def log_usage(username: str, tool_name: str = "Keywords"):
 
 
 # =============================================================================
+#  Zentrale Processing-Funktion für Tasks (Placeholder)
+# =============================================================================
+def process_task_and_save(task: dict, username: str) -> bool:
+    """
+    Verarbeitet einen einzelnen Task:
+    - liest Keywords + Settings
+    - baut Placeholder-SERP-Resultate
+    - speichert CSV
+    - setzt Status auf 'done'
+
+    Hier kannst du später die echte DataForSEO / SERP-Logik reinhängen.
+    """
+    settings = parse_settings(task.get("settings_json"))
+
+    try:
+        kw_list = json.loads(task["raw_keywords"])
+        kw_df = pd.DataFrame(kw_list)
+        if kw_df.columns.tolist() == [0]:
+            kw_df.columns = ["Keyword"]
+    except Exception as e:
+        st.error(f"Cannot parse keywords for task {task['task_id']}: {e}")
+        return False
+
+    # Placeholder-Resultate: pro Keyword eine Zeile
+    rows = []
+    se = settings.get("search_engine", "google.de")
+    device = settings.get("device", "desktop")
+    loc = settings.get("location_name", "Germany")
+    lang = settings.get("language_code", "de")
+    depth = settings.get("results_per_keyword", 20)
+
+    for kw in kw_df["Keyword"].astype(str).tolist():
+        rows.append(
+            {
+                "Keyword": kw,
+                "Search engine": se,
+                "Device": device,
+                "Location": loc,
+                "Language": lang,
+                "Planned depth": depth,
+                "Position": 1,
+                "URL": (task["domain"] or "").strip() or "n/a",
+                "Created at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Note": "Placeholder result – replace with real SERP data later.",
+            }
+        )
+
+    res_df = pd.DataFrame(rows)
+    if save_task_results(username, task["task_id"], res_df):
+        update_task_status(task["task_id"], "done")
+        return True
+
+    return False
+
+
+# =============================================================================
 #  Kleine Helfer
 # =============================================================================
 def text_to_df(text: str, column_name: str = "Keyword") -> pd.DataFrame:
@@ -667,6 +723,19 @@ def main():
                 f"| done: {status_counts.get('done', 0)} "
                 f"| error: {status_counts.get('error', 0)}"
             )
+
+            # Globale Verarbeitung: alle pending-Tasks auf einmal
+            if st.button("▶️ Process all pending tasks now"):
+                processed = 0
+                for t in tasks:
+                    if t["status"] == "pending":
+                        if process_task_and_save(t, USERNAME or "unknown"):
+                            processed += 1
+                if processed > 0:
+                    st.success(f"Processed {processed} pending tasks.")
+                    st.experimental_rerun()
+                else:
+                    st.info("No pending tasks to process.")
         else:
             st.info("Keine Tasks gefunden. Lege im Tab „Create Task“ einen Task an.")
             return
@@ -796,7 +865,7 @@ def main():
                         st.write("Keyword download not available (invalid keyword payload).")
 
                 st.markdown("---")
-                st.markdown("#### SERP results (placeholder)")
+                st.markdown("#### SERP results")
 
                 # Ergebnis laden, falls vorhanden
                 results_df = load_task_results(USERNAME or "unknown", task["task_id"])
@@ -821,59 +890,22 @@ def main():
                 else:
                     st.info(
                         "Für diesen Task liegen noch keine gespeicherten Ergebnisse vor. "
-                        "Als nächsten Schritt haben wir eine Placeholder-Verarbeitung eingebaut, "
-                        "bis die echte Logik aus der Hauptdatei wieder dranhängt."
+                        "Du kannst unten eine Placeholder-Verarbeitung ausführen. "
+                        "Später hängt hier die echte SERP-Logik aus der Hauptdatei."
                     )
                     if st.button(
-                        "▶️ Simulate processing (create placeholder results)",
+                        "▶️ Process this task now (placeholder)",
                         key=f"simulate_{task['task_id']}",
                     ):
-                        try:
-                            kw_list = json.loads(task["raw_keywords"])
-                            kw_df = pd.DataFrame(kw_list)
-                            if kw_df.columns.tolist() == [0]:
-                                kw_df.columns = ["Keyword"]
-
-                            # Placeholder-Resultate: pro Keyword eine Zeile
-                            rows = []
-                            se = settings.get("search_engine", "google.de")
-                            device = settings.get("device", "desktop")
-                            loc = settings.get("location_name", "Germany")
-                            lang = settings.get("language_code", "de")
-                            depth = settings.get("results_per_keyword", 20)
-
-                            for kw in kw_df["Keyword"].astype(str).tolist():
-                                rows.append(
-                                    {
-                                        "Keyword": kw,
-                                        "Search engine": se,
-                                        "Device": device,
-                                        "Location": loc,
-                                        "Language": lang,
-                                        "Planned depth": depth,
-                                        "Position": 1,
-                                        "URL": (task["domain"] or "").strip() or "n/a",
-                                        "Created at": datetime.now().strftime(
-                                            "%Y-%m-%d %H:%M:%S"
-                                        ),
-                                        "Note": "Placeholder result – replace with real SERP data later.",
-                                    }
-                                )
-
-                            res_df = pd.DataFrame(rows)
-                            if save_task_results(
-                                USERNAME or "unknown", task["task_id"], res_df
-                            ):
-                                update_task_status(task["task_id"], "done")
-                                st.success(
-                                    "Placeholder-Ergebnisse wurden erstellt und gespeichert. "
-                                    "Später wird hier die echte Logik aus der Hauptdatei laufen."
-                                )
-                                st.experimental_rerun()
-                            else:
-                                st.error("Placeholder-Ergebnisse konnten nicht gespeichert werden.")
-                        except Exception as e:
-                            st.error(f"Error while simulating results: {e}")
+                        ok = process_task_and_save(task, USERNAME or "unknown")
+                        if ok:
+                            st.success(
+                                "Placeholder-Ergebnisse wurden erstellt und gespeichert. "
+                                "Später wird hier die echte Logik aus der Hauptdatei laufen."
+                            )
+                            st.experimental_rerun()
+                        else:
+                            st.error("Fehler bei der Verarbeitung dieses Tasks.")
 
 
 # =============================================================================
