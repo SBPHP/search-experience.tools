@@ -508,6 +508,154 @@ def parse_settings(settings_json: Optional[str]) -> dict:
 
 
 # =============================================================================
+#  Keyword-Validierung & AI Overview (lokal, non-AI Placeholder)
+# =============================================================================
+def _normalize_keyword_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Stellt sicher, dass eine 'Keyword'-Spalte existiert und trimmt Whitespaces.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Keyword"])
+
+    df = df.copy()
+    if "Keyword" not in df.columns:
+        first_col = df.columns[0]
+        df.rename(columns={first_col: "Keyword"}, inplace=True)
+
+    df["Keyword"] = df["Keyword"].astype(str).str.strip()
+    df = df[df["Keyword"] != ""]
+    df = df.drop_duplicates(subset=["Keyword"])
+    return df
+
+
+def render_keyword_validation_section(task_type: str, keywords_df: pd.DataFrame):
+    """
+    Einfache Keyword-Validierung:
+    - Anzahl Keywords
+    - Leere Einträge / Duplikate (falls vorhanden)
+    - Länge & rudimentäre Qualitätshinweise
+    """
+    st.markdown("#### Keyword overview & validation")
+
+    if keywords_df is None or keywords_df.empty:
+        st.info("Keine Keywords vorhanden – nichts zu validieren.")
+        return
+
+    df = keywords_df.copy()
+    if "Keyword" not in df.columns:
+        first_col = df.columns[0]
+        df.rename(columns={first_col: "Keyword"}, inplace=True)
+
+    df["Keyword"] = df["Keyword"].astype(str)
+
+    # Basis-Stats
+    num_total = len(df)
+    num_empty = (df["Keyword"].str.strip() == "").sum()
+    num_unique = df["Keyword"].str.strip().nunique()
+
+    # Länge
+    lengths = df["Keyword"].str.len()
+    avg_len = lengths.mean() if not lengths.empty else 0
+    max_len = lengths.max() if not lengths.empty else 0
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total keywords", num_total)
+        st.metric("Unique keywords", num_unique)
+    with col2:
+        st.metric("Empty keywords", int(num_empty))
+        st.metric("Avg. length", f"{avg_len:.1f} chars")
+    with col3:
+        st.metric("Max. length", int(max_len) if max_len else 0)
+        st.write(f"**Task type:** `{task_type}`")
+
+    # Duplikate anzeigen
+    df["normalized"] = df["Keyword"].str.strip().str.lower()
+    dup_mask = df["normalized"].duplicated(keep=False)
+    dup_df = df[dup_mask].sort_values("normalized")
+
+    if not dup_df.empty:
+        st.warning(
+            f"Es wurden {len(dup_df)} Zeilen mit potentiellen Duplikaten gefunden "
+            f"(Case-insensitive, whitespace-normalisiert)."
+        )
+        st.dataframe(dup_df[["Keyword"]].reset_index(drop=True).head(50))
+    else:
+        st.success("Keine offensichtlichen Duplikate gefunden.")
+
+    st.caption(
+        "Diese Validierung ist lokal/heuristisch. "
+        "Für komplexere Checks (Suchintention, Clustering etc.) kann später eine echte AI-/API-Logik ergänzt werden."
+    )
+
+
+def render_ai_overview_section(task_type: str, keywords_df: pd.DataFrame):
+    """
+    Ein einfacher, lokaler AI-Overview-Placeholder:
+    - zeigt Basis-Metriken zu den Keywords
+    - extrahiert häufige Tokens (sehr grob)
+    - kann später durch echtes LLM-/get_api-Overview ersetzt werden
+    """
+    st.markdown("#### AI Overview (beta)")
+
+    if keywords_df is None or keywords_df.empty:
+        st.info("Keine Keywords vorhanden – AI Overview kann nicht berechnet werden.")
+        return
+
+    df = keywords_df.copy()
+    if "Keyword" not in df.columns:
+        first_col = df.columns[0]
+        df.rename(columns={first_col: "Keyword"}, inplace=True)
+
+    df["Keyword"] = df["Keyword"].astype(str).str.strip()
+    df = df[df["Keyword"] != ""]
+
+    if df.empty:
+        st.info("Keine gültigen Keywords nach Bereinigung.")
+        return
+
+    # Ein paar einfache Kennzahlen
+    num_keywords = len(df)
+    avg_length = df["Keyword"].str.len().mean()
+    max_length = df["Keyword"].str.len().max()
+
+    # Häufigste Worte (extrem simpel – nur als Placeholder)
+    token_series = (
+        df["Keyword"]
+        .str.lower()
+        .str.replace(r"[^a-z0-9äöüß ]+", " ", regex=True)
+        .str.split()
+    )
+    all_tokens = [t for tokens in token_series for t in tokens if t]
+    token_counts = {}
+    for t in all_tokens:
+        token_counts[t] = token_counts.get(t, 0) + 1
+
+    top_tokens = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Basic metrics**")
+        st.write(f"- Number of keywords: **{num_keywords}**")
+        st.write(f"- Avg. keyword length: **{avg_length:.1f}** characters")
+        st.write(f"- Max. keyword length: **{max_length}** characters")
+        st.write(f"- Selected task type: `{task_type}`")
+
+    with col2:
+        st.write("**Most frequent tokens (very rough)**")
+        if top_tokens:
+            top_df = pd.DataFrame(top_tokens, columns=["Token", "Count"])
+            st.dataframe(top_df)
+        else:
+            st.write("No tokens could be extracted.")
+
+    st.caption(
+        "Dieses AI Overview ist aktuell nur ein heuristischer Placeholder "
+        "ohne externes LLM. Hier kannst du später dein echtes AI- / get_api-Overview andocken."
+    )
+
+
+# =============================================================================
 #  Haupt-UI
 # =============================================================================
 def main():
@@ -638,7 +786,9 @@ def main():
                 first_col = df_raw.columns[0]
                 keywords_df = pd.DataFrame(df_raw[first_col].values, columns=["Keyword"])
                 keywords_df = keywords_df.dropna(subset=["Keyword"])
-                keywords_df = keywords_df[keywords_df["Keyword"].astype(str).str.strip() != ""]
+                keywords_df = keywords_df[
+                    keywords_df["Keyword"].astype(str).str.strip() != ""
+                ]
                 st.write(f"Detected {len(keywords_df)} keywords from file.")
                 st.dataframe(keywords_df.head(20))
             except Exception as e:
@@ -661,6 +811,13 @@ def main():
                 "Die eigentliche API-Logik aus der Hauptdatei hängen wir anschließend wieder dran."
             )
 
+            # --- Keyword-Validierung / Preview ---
+            render_keyword_validation_section(task_type, keywords_df)
+
+            # --- AI Overview (Placeholder, später durch echtes LLM ersetzbar) ---
+            with st.expander("AI Overview (beta)", expanded=False):
+                render_ai_overview_section(task_type, keywords_df)
+
             # Settings für diesen Task zusammenbauen
             settings = {
                 "search_engine": search_engine,
@@ -674,7 +831,9 @@ def main():
             num_keywords = len(keywords_df)
 
             if st.button("Create task", type="primary"):
-                raw_keywords_json = keywords_df.to_json(orient="records", force_ascii=False)
+                raw_keywords_json = keywords_df.to_json(
+                    orient="records", force_ascii=False
+                )
                 task_id = generate_task_id(domain or "no-domain")
                 ok = save_task(
                     USERNAME or "unknown",
