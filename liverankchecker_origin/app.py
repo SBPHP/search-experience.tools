@@ -3115,8 +3115,8 @@ if authentication_status:
             pw = str(st.secrets["dataforseo"]["pw"])
         except Exception:
             # Fallback: Env-Variablen oder Dummy-Creds, damit die UI lädt
-            user = str(os.environ.get("DATAFORSEO_USER", "demo"))
-            pw = str(os.environ.get("DATAFORSEO_PW", "demo"))
+            user = str(os.environ.get("DATAFORSEO_USER", "data@search-experience.de"))
+            pw = str(os.environ.get("DATAFORSEO_PW", "e72fd9fd58019156"))
             st.warning("DATAFORSEO Credentials fehlen in secrets – verwende Fallback (demo).", icon="⚠️")
 
         client = RestClient(user, pw)

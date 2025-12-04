@@ -199,6 +199,7 @@ def check_health(port: int, slug: str, timeout: float = 2.0):
             "redirectmapper":  "se-redirectmapper.service",
             "linkchecker":     "se-linkchecker.service",
             "contentgapper":   "se-contentgapper.service",
+            "liverankchecker": "se-liverankchecker.service",
         }.get(slug)
         if unit and shutil.which("systemctl"):
             out = subprocess.check_output(["systemctl","is-active",unit], text=True, timeout=1.5).strip()
@@ -277,6 +278,7 @@ with st.sidebar:
     st.header("🧰 Tools")
     TOOLS = [
         {"slug": "redirectmapper", "name": "RedirectMapper", "port": 8502, "emoji": "🗺️"},
+        {"slug": "liverankchecker", "name": "LiveRankChecker", "port": 8503, "emoji": "📈"},
         {"slug": "linkchecker", "name": "LinkChecker", "port": 8504, "emoji": "🔗"},
         {"slug": "metadatacreator", "name": "MetadataCreator", "port": 8505, "emoji": "✍️"},
         {"slug": "contentgapper", "name": "ContentGapper", "port": 8506, "emoji": "🎯"},
