@@ -35,8 +35,78 @@ except ImportError:
             return _fallback_extract(url)
 
     tldextract = _TldExtractShim()  # type: ignore
-import aiohttp
 import asyncio
+# --- Optional dependency: aiohttp ---
+try:
+    import aiohttp  # type: ignore
+except ImportError:
+    import urllib.request
+    import urllib.error
+    import json as _json
+
+    class _SimpleResponse:
+        def __init__(self, body: bytes, status: int = 200):
+            self._body = body
+            self.status = status
+
+        async def text(self) -> str:
+            try:
+                return self._body.decode("utf-8")
+            except Exception:
+                return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _SimpleRequestCM:
+        def __init__(self, req: urllib.request.Request):
+            self._req = req
+
+        async def __aenter__(self) -> _SimpleResponse:
+            try:
+                with urllib.request.urlopen(self._req) as resp:  # nosec: B310 (external URL per user config)
+                    return _SimpleResponse(resp.read(), getattr(resp, "status", 200))
+            except urllib.error.HTTPError as e:
+                return _SimpleResponse(e.read() if hasattr(e, "read") else b"", getattr(e, "code", 500))
+            except Exception:
+                return _SimpleResponse(b"", 500)
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _ClientSession:
+        def __init__(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url: str, headers=None):
+            req = urllib.request.Request(url, headers=headers or {}, method="GET")
+            return _SimpleRequestCM(req)
+
+        def post(self, url: str, headers=None, data=None):
+            payload = None
+            if data is not None:
+                if isinstance(data, str):
+                    payload = data.encode("utf-8")
+                elif isinstance(data, (dict, list)):
+                    payload = _json.dumps(data).encode("utf-8")
+                else:
+                    payload = str(data).encode("utf-8")
+            req = urllib.request.Request(url, headers=headers or {}, data=payload, method="POST")
+            return _SimpleRequestCM(req)
+
+    class _AioHttpShim:
+        ClientSession = _ClientSession
+
+    aiohttp = _AioHttpShim()  # type: ignore
 from base64 import b64encode
 from json import loads, dumps
 import os
