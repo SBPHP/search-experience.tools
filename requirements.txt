@@ -1,0 +1,6 @@
+streamlit
+requests
+pyyaml
+streamlit-authenticator
+tldextract
+aiohttp
