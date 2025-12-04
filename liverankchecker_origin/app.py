@@ -3110,8 +3110,17 @@ if authentication_status:
             return
 
         # Initialize both sync and async clients
-        client = RestClient(str(st.secrets["dataforseo"]["user"]), str(st.secrets["dataforseo"]["pw"]))
-        async_client = AsyncRestClient(str(st.secrets["dataforseo"]["user"]), str(st.secrets["dataforseo"]["pw"]))
+        try:
+            user = str(st.secrets["dataforseo"]["user"])
+            pw = str(st.secrets["dataforseo"]["pw"])
+        except Exception:
+            # Fallback: Env-Variablen oder Dummy-Creds, damit die UI lädt
+            user = str(os.environ.get("DATAFORSEO_USER", "demo"))
+            pw = str(os.environ.get("DATAFORSEO_PW", "demo"))
+            st.warning("DATAFORSEO Credentials fehlen in secrets – verwende Fallback (demo).", icon="⚠️")
+
+        client = RestClient(user, pw)
+        async_client = AsyncRestClient(user, pw)
         sorted_countries = custom_sort(COUNTRIES, preferred_countries)
         sorted_languages = custom_sort(LANGUAGES, preferred_languages)
 
