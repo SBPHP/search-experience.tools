@@ -3,119 +3,9 @@ import pandas as pd
 import base64
 import io
 import re
-try:
-    import tldextract  # type: ignore
-except ImportError:
-    # Fallback, damit die App ohne tldextract weiterhin läuft
-    import urllib.parse
-
-    class _ExtractResult:
-        def __init__(self, subdomain: str, domain: str, suffix: str):
-            self.subdomain = subdomain
-            self.domain = domain
-            self.suffix = suffix
-
-        @property
-        def top_domain_under_public_suffix(self) -> str:
-            if self.domain and self.suffix:
-                return f"{self.domain}.{self.suffix}"
-            return self.domain or ""
-
-    def _fallback_extract(url: str) -> _ExtractResult:
-        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
-        host = parsed.hostname or ""
-        parts = host.split(".") if host else []
-        subdomain = ".".join(parts[:-2]) if len(parts) > 2 else ""
-        domain = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
-        suffix = parts[-1] if len(parts) >= 2 else ""
-        return _ExtractResult(subdomain, domain, suffix)
-
-    class _TldExtractShim:
-        def extract(self, url: str) -> _ExtractResult:
-            return _fallback_extract(url)
-
-    tldextract = _TldExtractShim()  # type: ignore
+import tldextract
+import aiohttp
 import asyncio
-# sys.path sicherstellen, damit utils gefunden wird (Root + aktuelles Verzeichnis)
-import sys
-import os
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PARENT_DIR = os.path.abspath(os.path.join(_THIS_DIR, ".."))
-for _p in (_PARENT_DIR, _THIS_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-# --- Optional dependency: aiohttp ---
-try:
-    import aiohttp  # type: ignore
-except ImportError:
-    import urllib.request
-    import urllib.error
-    import json as _json
-
-    class _SimpleResponse:
-        def __init__(self, body: bytes, status: int = 200):
-            self._body = body
-            self.status = status
-
-        async def text(self) -> str:
-            try:
-                return self._body.decode("utf-8")
-            except Exception:
-                return ""
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class _SimpleRequestCM:
-        def __init__(self, req: urllib.request.Request):
-            self._req = req
-
-        async def __aenter__(self) -> _SimpleResponse:
-            try:
-                with urllib.request.urlopen(self._req) as resp:  # nosec: B310 (external URL per user config)
-                    return _SimpleResponse(resp.read(), getattr(resp, "status", 200))
-            except urllib.error.HTTPError as e:
-                return _SimpleResponse(e.read() if hasattr(e, "read") else b"", getattr(e, "code", 500))
-            except Exception:
-                return _SimpleResponse(b"", 500)
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class _ClientSession:
-        def __init__(self):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def get(self, url: str, headers=None):
-            req = urllib.request.Request(url, headers=headers or {}, method="GET")
-            return _SimpleRequestCM(req)
-
-        def post(self, url: str, headers=None, data=None):
-            payload = None
-            if data is not None:
-                if isinstance(data, str):
-                    payload = data.encode("utf-8")
-                elif isinstance(data, (dict, list)):
-                    payload = _json.dumps(data).encode("utf-8")
-                else:
-                    payload = str(data).encode("utf-8")
-            req = urllib.request.Request(url, headers=headers or {}, data=payload, method="POST")
-            return _SimpleRequestCM(req)
-
-    class _AioHttpShim:
-        ClientSession = _ClientSession
-
-    aiohttp = _AioHttpShim()  # type: ignore
 from base64 import b64encode
 from json import loads, dumps
 import os
@@ -124,95 +14,10 @@ import csv
 import sqlite3
 import json
 from http.client import HTTPSConnection
+from utils.utils import read_markdown_file, set_page_config, handle_authentication, logout, apply_claneo_branding
+from utils.keyword_validator import validate_keywords_for_task_type, format_validation_report, KeywordValidator, APIEndpoint, get_api_rules_summary
 import time
 from urllib.parse import urlparse
-
-# --- Utils: bevorzugt echtes Modul, sonst lokale Shims ---
-try:
-    from utils.utils import read_markdown_file, set_page_config, handle_authentication, logout, apply_claneo_branding
-    from utils.keyword_validator import (
-        validate_keywords_for_task_type,
-        format_validation_report,
-        KeywordValidator,
-        APIEndpoint,
-        get_api_rules_summary,
-    )
-except Exception:
-    # Lokale Minimal-Shims, falls utils nicht verfügbar ist
-    def read_markdown_file(path: str) -> str:
-        try:
-            from pathlib import Path
-            return Path(path).read_text(encoding="utf-8")
-        except Exception:
-            return ""
-
-    def set_page_config(**kwargs):
-        try:
-            import streamlit as _st
-            _st.set_page_config(**kwargs)
-        except Exception:
-            pass
-
-    def handle_authentication():
-        return ("demo", True, "demo")
-
-    def logout():
-        try:
-            import streamlit as _st
-            for k in ("authentication_status","authed","username","user","email","name","display_name","user_name"):
-                _st.session_state.pop(k, None)
-            try:
-                _st.query_params.clear()
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    def apply_claneo_branding(title=None, subtitle=None, **kwargs):
-        try:
-            import streamlit as _st
-            try:
-                _st.logo("https://www.claneo.com/wp-content/uploads/Element-4.svg")
-            except Exception:
-                pass
-            if title:
-                _st.title(str(title))
-            if subtitle:
-                _st.caption(str(subtitle))
-        except Exception:
-            pass
-
-    class KeywordError:
-        def __init__(self, keyword="", error_type="unknown", message="", suggestion=""):
-            self.keyword = keyword
-            self.error_type = error_type
-            self.message = message
-            self.suggestion = suggestion
-
-    class ValidationResult:
-        def __init__(self, invalid_keywords=None):
-            self.invalid_keywords = invalid_keywords or []
-
-    class KeywordValidator:
-        def __init__(self, *args, **kwargs):
-            pass
-        def validate(self, keywords, task_type=None):
-            return ValidationResult([])
-
-    class APIEndpoint:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    def validate_keywords_for_task_type(keywords, task_type=None):
-        return ValidationResult([])
-
-    def format_validation_report(validation_result):
-        if not getattr(validation_result, "invalid_keywords", []):
-            return "All keywords valid."
-        return "\n".join(f"{getattr(err, 'keyword', '')}: {getattr(err, 'message', '')}" for err in validation_result.invalid_keywords)
-
-    def get_api_rules_summary():
-        return "Keyword validation shim: no rules enforced."
 
 # -------------
 # Constants
@@ -3110,17 +2915,8 @@ if authentication_status:
             return
 
         # Initialize both sync and async clients
-        try:
-            user = str(st.secrets["dataforseo"]["user"])
-            pw = str(st.secrets["dataforseo"]["pw"])
-        except Exception:
-            # Fallback: Env-Variablen oder Dummy-Creds, damit die UI lädt
-            user = str(os.environ.get("DATAFORSEO_USER", "demo"))
-            pw = str(os.environ.get("DATAFORSEO_PW", "demo"))
-            st.warning("DATAFORSEO Credentials fehlen in secrets – verwende Fallback (demo).", icon="⚠️")
-
-        client = RestClient(user, pw)
-        async_client = AsyncRestClient(user, pw)
+        client = RestClient(str(st.secrets["dataforseo"]["user"]), str(st.secrets["dataforseo"]["pw"]))
+        async_client = AsyncRestClient(str(st.secrets["dataforseo"]["user"]), str(st.secrets["dataforseo"]["pw"]))
         sorted_countries = custom_sort(COUNTRIES, preferred_countries)
         sorted_languages = custom_sort(LANGUAGES, preferred_languages)
 
