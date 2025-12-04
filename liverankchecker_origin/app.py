@@ -6,7 +6,7 @@ import re
 try:
     import tldextract  # type: ignore
 except ImportError:
-    # Fallback, damit die App ohne tldextract wenigstens startet
+    # Fallback, damit die App ohne tldextract weiterhin läuft
     import urllib.parse
 
     class _ExtractResult:
@@ -35,9 +35,6 @@ except ImportError:
             return _fallback_extract(url)
 
     tldextract = _TldExtractShim()  # type: ignore
-    import streamlit as st
-
-    st.warning("Falle auf vereinfachten Domain-Parser zurück – bitte 'tldextract' installieren.", icon="⚠️")
 import aiohttp
 import asyncio
 from base64 import b64encode
