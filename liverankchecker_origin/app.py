@@ -3,7 +3,41 @@ import pandas as pd
 import base64
 import io
 import re
-import tldextract
+try:
+    import tldextract  # type: ignore
+except ImportError:
+    # Fallback, damit die App ohne tldextract wenigstens startet
+    import urllib.parse
+
+    class _ExtractResult:
+        def __init__(self, subdomain: str, domain: str, suffix: str):
+            self.subdomain = subdomain
+            self.domain = domain
+            self.suffix = suffix
+
+        @property
+        def top_domain_under_public_suffix(self) -> str:
+            if self.domain and self.suffix:
+                return f"{self.domain}.{self.suffix}"
+            return self.domain or ""
+
+    def _fallback_extract(url: str) -> _ExtractResult:
+        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+        host = parsed.hostname or ""
+        parts = host.split(".") if host else []
+        subdomain = ".".join(parts[:-2]) if len(parts) > 2 else ""
+        domain = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+        suffix = parts[-1] if len(parts) >= 2 else ""
+        return _ExtractResult(subdomain, domain, suffix)
+
+    class _TldExtractShim:
+        def extract(self, url: str) -> _ExtractResult:
+            return _fallback_extract(url)
+
+    tldextract = _TldExtractShim()  # type: ignore
+    import streamlit as st
+
+    st.warning("Falle auf vereinfachten Domain-Parser zurück – bitte 'tldextract' installieren.", icon="⚠️")
 import aiohttp
 import asyncio
 from base64 import b64encode

@@ -190,7 +190,7 @@ with st.sidebar:
     st.caption(f"👤 Eingeloggt als: {_current_user_name() or '–'}")
 
 def check_health(port: int, slug: str, timeout: float = 2.0):
-    import time as _t, subprocess, shutil, requests
+    import time as _t, subprocess, shutil
     start = _t.perf_counter()
     ok_sys = False
     try:
@@ -208,12 +208,21 @@ def check_health(port: int, slug: str, timeout: float = 2.0):
 
     ok_http = False
     try:
+        try:
+            import requests
+        except ImportError:
+            # Streamlit-Fehler vermeiden, wenn requests nicht installiert ist
+            if not st.session_state.get("_warn_requests_missing"):
+                st.session_state["_warn_requests_missing"] = True
+                st.warning("Das Paket 'requests' fehlt – Health-Checks nur teilweise verfügbar.")
+            raise
+
         urls = [
             f"http://127.0.0.1:{port}/_stcore/health",
             f"http://127.0.0.1:{port}/healthz",
             f"http://127.0.0.1:{port}/",
         ]
-        import requests
+
         def _probe(url: str) -> int:
             try:
                 r = requests.head(url, timeout=timeout, allow_redirects=False)
@@ -226,6 +235,7 @@ def check_health(port: int, slug: str, timeout: float = 2.0):
                 return r.status_code
             except Exception:
                 return 0
+
         for url in urls:
             code = _probe(url)
             if 200 <= code < 400:
