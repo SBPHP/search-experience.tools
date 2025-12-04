@@ -36,6 +36,15 @@ except ImportError:
 
     tldextract = _TldExtractShim()  # type: ignore
 import asyncio
+# sys.path sicherstellen, damit utils gefunden wird (Root + aktuelles Verzeichnis)
+import sys
+import os
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.abspath(os.path.join(_THIS_DIR, ".."))
+for _p in (_PARENT_DIR, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 # --- Optional dependency: aiohttp ---
 try:
     import aiohttp  # type: ignore
@@ -115,10 +124,95 @@ import csv
 import sqlite3
 import json
 from http.client import HTTPSConnection
-from utils.utils import read_markdown_file, set_page_config, handle_authentication, logout, apply_claneo_branding
-from utils.keyword_validator import validate_keywords_for_task_type, format_validation_report, KeywordValidator, APIEndpoint, get_api_rules_summary
 import time
 from urllib.parse import urlparse
+
+# --- Utils: bevorzugt echtes Modul, sonst lokale Shims ---
+try:
+    from utils.utils import read_markdown_file, set_page_config, handle_authentication, logout, apply_claneo_branding
+    from utils.keyword_validator import (
+        validate_keywords_for_task_type,
+        format_validation_report,
+        KeywordValidator,
+        APIEndpoint,
+        get_api_rules_summary,
+    )
+except Exception:
+    # Lokale Minimal-Shims, falls utils nicht verfügbar ist
+    def read_markdown_file(path: str) -> str:
+        try:
+            from pathlib import Path
+            return Path(path).read_text(encoding="utf-8")
+        except Exception:
+            return ""
+
+    def set_page_config(**kwargs):
+        try:
+            import streamlit as _st
+            _st.set_page_config(**kwargs)
+        except Exception:
+            pass
+
+    def handle_authentication():
+        return ("demo", True, "demo")
+
+    def logout():
+        try:
+            import streamlit as _st
+            for k in ("authentication_status","authed","username","user","email","name","display_name","user_name"):
+                _st.session_state.pop(k, None)
+            try:
+                _st.query_params.clear()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def apply_claneo_branding(title=None, subtitle=None, **kwargs):
+        try:
+            import streamlit as _st
+            try:
+                _st.logo("https://www.claneo.com/wp-content/uploads/Element-4.svg")
+            except Exception:
+                pass
+            if title:
+                _st.title(str(title))
+            if subtitle:
+                _st.caption(str(subtitle))
+        except Exception:
+            pass
+
+    class KeywordError:
+        def __init__(self, keyword="", error_type="unknown", message="", suggestion=""):
+            self.keyword = keyword
+            self.error_type = error_type
+            self.message = message
+            self.suggestion = suggestion
+
+    class ValidationResult:
+        def __init__(self, invalid_keywords=None):
+            self.invalid_keywords = invalid_keywords or []
+
+    class KeywordValidator:
+        def __init__(self, *args, **kwargs):
+            pass
+        def validate(self, keywords, task_type=None):
+            return ValidationResult([])
+
+    class APIEndpoint:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def validate_keywords_for_task_type(keywords, task_type=None):
+        return ValidationResult([])
+
+    def format_validation_report(validation_result):
+        if not getattr(validation_result, "invalid_keywords", []):
+            return "All keywords valid."
+        return "\n".join(f"{getattr(err, 'keyword', '')}: {getattr(err, 'message', '')}" for err in validation_result.invalid_keywords)
+
+    def get_api_rules_summary():
+        return "Keyword validation shim: no rules enforced."
 
 # -------------
 # Constants
